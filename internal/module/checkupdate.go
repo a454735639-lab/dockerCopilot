@@ -61,6 +61,10 @@ func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
 		if strings.Contains(strings.ToLower(image.ImageName), selfImageName) {
 			continue
 		}
+		// 忽略名单命中的镜像直接不查：省一次网络往返，也让它彻底不出现在面板上
+		if IgnoredImage(image.ImageName, image.ImageTag) {
+			continue
+		}
 		if result, ok := i.checkSingleImage(image); ok {
 			next[image.ID] = result
 		}
