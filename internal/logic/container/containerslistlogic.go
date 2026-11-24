@@ -66,12 +66,17 @@ func (l *ContainersListLogic) ContainersList() (resp *types.Resp, err error) {
 			containerInfo.UsingImage = v.ImageID
 			l.Error("image dont have name" + v.ID)
 		}
-		containerInspect, err := utiles.GetContainerInspect(l.svcCtx, v.ID)
-		if err != nil {
-			containerInfo.CreateImage = ""
-			l.Error("get image name error" + v.ID)
+		// 列表接口本身已经带「创建容器时使用的镜像名」，不必再逐个容器 inspect。
+		// 原来是 N 个容器 = N+1 次 Docker API 调用，容器多时列表要等好几秒。
+		containerInfo.CreateImage = v.Image
+		if containerInfo.CreateImage == "" {
+			// 极少数情况（列表没带镜像名）才回退到 inspect 补一次
+			if containerInspect, inspectErr := utiles.GetContainerInspect(l.svcCtx, v.ID); inspectErr != nil {
+				l.Error("get image name error" + v.ID)
+			} else {
+				containerInfo.CreateImage = containerInspect.Config.Image
+			}
 		}
-		containerInfo.CreateImage = containerInspect.Config.Image
 		t := time.Unix(v.Created, 0)
 		containerInfo.CreateTime = t.Format("2006-01-02 15:04:05")
 		containerInfo.RunningTime = v.Status
