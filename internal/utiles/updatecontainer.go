@@ -267,6 +267,10 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		serviceContext.HubImageInfo.CheckUpdate(list)
 	}()
 
+	if PruneEnabled() {
+		go PruneOldImages(serviceContext)
+	}
+
 	return nil
 }
 
