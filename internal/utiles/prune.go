@@ -2,7 +2,6 @@ package utiles
 
 import (
 	"context"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/onlyLTY/dockerCopilot/internal/module"
+	"github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -119,7 +119,7 @@ func imageRepository(ref string) string {
 }
 
 func envBool(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	switch strings.ToLower(strings.TrimSpace(settings.Str(key))) {
 	case "1", "true", "yes", "on":
 		return true
 	}

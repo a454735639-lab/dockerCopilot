@@ -1,12 +1,12 @@
 package utiles
 
 import (
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/onlyLTY/dockerCopilot/internal/module"
+	"github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -21,7 +21,7 @@ import (
 // IGNORE_IMAGES / IGNORE_CONTAINERS 对自动更新同样生效。
 
 func AutoUpdateEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_UPDATE"))) {
+	switch strings.ToLower(settings.Str("AUTO_UPDATE")) {
 	case "1", "true", "yes", "on":
 		return true
 	}
@@ -29,7 +29,7 @@ func AutoUpdateEnabled() bool {
 }
 
 func AutoUpdateCron() string {
-	if v := strings.TrimSpace(os.Getenv("AUTO_UPDATE_CRON")); v != "" {
+	if v := strings.TrimSpace(settings.Str("AUTO_UPDATE_CRON")); v != "" {
 		return v
 	}
 	return "0 4 * * *"
@@ -92,7 +92,7 @@ func AutoUpdateOnce(ctx *svc.ServiceContext) {
 }
 
 func envInt(key string, def int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
+	raw := strings.TrimSpace(settings.Str(key))
 	if raw == "" {
 		return def
 	}

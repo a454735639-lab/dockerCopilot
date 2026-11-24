@@ -1,10 +1,11 @@
 package module
 
 import (
-	"os"
 	"path"
 	"strings"
 	"sync"
+
+	"github.com/onlyLTY/dockerCopilot/internal/settings"
 )
 
 // 忽略名单（环境变量，逗号分隔，支持 * 通配）：
@@ -26,7 +27,7 @@ func loadIgnore() {
 
 // EnvList 读取逗号分隔的环境变量，返回小写去空后的列表
 func EnvList(key string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
+	raw := strings.TrimSpace(settings.Str(key))
 	if raw == "" {
 		return nil
 	}

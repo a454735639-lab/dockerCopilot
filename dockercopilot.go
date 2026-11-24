@@ -12,6 +12,7 @@ import (
 
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
+	"github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/robfig/cron/v3"
@@ -61,6 +62,7 @@ func main() {
 			httpx.WriteJson(w, http.StatusUnauthorized, response)
 		}))
 	defer server.Stop()
+	settings.Init()
 	ctx := svc.NewServiceContext(c)
 
 	// Ensure data directory and config exist (Auto-init)
@@ -106,16 +108,30 @@ export const customImageLogos = {
 		logx.Errorf("panic添加定时任务出错: %v", err)
 		panic(err)
 	}
-	if utiles.AutoUpdateEnabled() {
-		if _, addErr := corndanmu.AddFunc(utiles.AutoUpdateCron(), func() {
+	// 自动更新的时刻可以由 UI 改：配置一变就重建这个 cron 条目
+	var autoUpdateEntry cron.EntryID
+	rebuildAutoUpdate := func() {
+		if autoUpdateEntry != 0 {
+			corndanmu.Remove(autoUpdateEntry)
+			autoUpdateEntry = 0
+		}
+		if !utiles.AutoUpdateEnabled() {
+			logx.Info("定时自动更新：未开启")
+			return
+		}
+		entryID, addErr := corndanmu.AddFunc(utiles.AutoUpdateCron(), func() {
 			logx.Info("定时自动更新：开始")
 			utiles.AutoUpdateOnce(ctx)
-		}); addErr != nil {
+		})
+		if addErr != nil {
 			logx.Errorf("定时自动更新：cron 表达式无效（%s）: %v", utiles.AutoUpdateCron(), addErr)
-		} else {
-			logx.Infof("定时自动更新已开启: %s", utiles.AutoUpdateCron())
+			return
 		}
+		autoUpdateEntry = entryID
+		logx.Infof("定时自动更新已开启: %s", utiles.AutoUpdateCron())
 	}
+	rebuildAutoUpdate()
+	settings.OnChange(func() { go rebuildAutoUpdate() })
 	corndanmu.Start()
 	defer corndanmu.Stop()
 	httpx.SetErrorHandler(func(err error) (int, any) {

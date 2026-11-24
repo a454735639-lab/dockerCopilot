@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -34,7 +34,7 @@ type NotifyPayload struct {
 //
 // 识别不准时用 NOTIFY_FORMAT=bark|dingtalk|feishu|ntfy|generic 强制指定。
 func NotifyUpdate(p NotifyPayload) {
-	rawURL := strings.TrimSpace(os.Getenv("NOTIFY_URL"))
+	rawURL := strings.TrimSpace(settings.Str("NOTIFY_URL"))
 	if rawURL == "" {
 		return
 	}
@@ -54,7 +54,7 @@ var notifiedAvailable sync.Map // 镜像:tag -> 已通知过的远端 digest
 // 同一 digest 只推一次，不会每小时重复轰炸。
 // 不开启 AUTO_UPDATE 时，它等价于 Watchtower 的 monitor-only：只提醒、不动容器。
 func NotifyAvailable(serviceContext *svc.ServiceContext) {
-	if strings.TrimSpace(os.Getenv("NOTIFY_URL")) == "" {
+	if strings.TrimSpace(settings.Str("NOTIFY_URL")) == "" {
 		return
 	}
 	for _, item := range serviceContext.HubImageInfo.Snapshot() {
@@ -99,7 +99,7 @@ func sendNotify(rawURL string, p NotifyPayload) error {
 }
 
 func buildNotifyBody(rawURL string, p NotifyPayload) ([]byte, string, error) {
-	format := strings.ToLower(strings.TrimSpace(os.Getenv("NOTIFY_FORMAT")))
+	format := strings.ToLower(strings.TrimSpace(settings.Str("NOTIFY_FORMAT")))
 	if format == "" {
 		format = guessNotifyFormat(rawURL)
 	}

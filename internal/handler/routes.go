@@ -11,6 +11,7 @@ import (
 	icons "github.com/onlyLTY/dockerCopilot/internal/handler/icons"
 	image "github.com/onlyLTY/dockerCopilot/internal/handler/image"
 	progress "github.com/onlyLTY/dockerCopilot/internal/handler/progress"
+	settings "github.com/onlyLTY/dockerCopilot/internal/handler/settings"
 	version "github.com/onlyLTY/dockerCopilot/internal/handler/version"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 
@@ -95,6 +96,16 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodGet,
 				Path:    "/containers",
 				Handler: container.ContainersListHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/settings",
+				Handler: settings.GetHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/settings",
+				Handler: settings.UpdateHandler(serverCtx),
 			},
 		},
 		rest.WithJwt(serverCtx.Config.Auth.AccessSecret),
