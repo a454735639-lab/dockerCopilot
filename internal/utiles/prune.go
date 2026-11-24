@@ -3,7 +3,6 @@ package utiles
 import (
 	"context"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -14,35 +13,64 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-// 旧镜像清理（默认关闭）：
+// 旧镜像清理（默认关闭，也可在界面里手动触发）：
 //
-//	PRUNE_OLD_IMAGES=1     开启（更新成功后触发）
+//	PRUNE_OLD_IMAGES=1     开启（更新成功后自动触发）
 //	PRUNE_KEEP=2           每个仓库保留最近 N 个 tag，默认 2
 //	PRUNE_DANGLING=1       顺带清理无标签（<none>）镜像
-//	PRUNE_DRY_RUN=1        只写日志不删除，先看清楚会删什么
+//	PRUNE_DRY_RUN=1        只记录不删除
 //
 // 安全约束：任何仍被容器（含已停止）引用的镜像一律跳过；自身镜像不参与。
+
+type PruneItem struct {
+	ID   string `json:"id"`
+	Repo string `json:"repo"`
+	Tag  string `json:"tag"`
+	Size int64  `json:"size"`
+}
+
+type PruneReport struct {
+	Keep        int         `json:"keep"`
+	DryRun      bool        `json:"dryRun"`
+	Candidates  []PruneItem `json:"candidates"`
+	Removed     []PruneItem `json:"removed"`
+	SkippedUsed []string    `json:"skippedUsed"`
+	FreedBytes  int64       `json:"freedBytes"`
+}
 
 func PruneEnabled() bool {
 	return envBool("PRUNE_OLD_IMAGES")
 }
 
+// PruneOldImages 按环境变量配置执行一次清理（更新成功后自动调用）
 func PruneOldImages(serviceContext *svc.ServiceContext) {
-	keep := envInt("PRUNE_KEEP", 2)
-	dryRun := envBool("PRUNE_DRY_RUN")
-	pruneDangling := envBool("PRUNE_DANGLING")
+	report := PruneImagesByRepo(
+		serviceContext,
+		envInt("PRUNE_KEEP", 2),
+		envBool("PRUNE_DANGLING"),
+		envBool("PRUNE_DRY_RUN"),
+	)
+	logx.Infof("清理旧镜像：候选 %d，删除 %d，跳过占用 %d，释放 %d MB",
+		len(report.Candidates), len(report.Removed), len(report.SkippedUsed), report.FreedBytes/1024/1024)
+}
+
+// PruneImagesByRepo 按仓库保留最近 keep 个版本，dryRun 时只返回候选不删除
+func PruneImagesByRepo(serviceContext *svc.ServiceContext, keep int, pruneDangling bool, dryRun bool) PruneReport {
+	if keep < 1 {
+		keep = 1
+	}
+	report := PruneReport{Keep: keep, DryRun: dryRun}
 	ctx := context.Background()
 
 	containers, err := serviceContext.DockerClient.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		logx.Errorf("清理旧镜像：获取容器列表失败: %v", err)
-		return
+		return report
 	}
 	inUse := make(map[string]bool, len(containers))
 	keepByRepo := make(map[string]int)
 	for _, c := range containers {
 		inUse[c.ImageID] = true
-		// 容器标签 dockercopilot.keep=N 可以抬高它所用仓库的保留数量
 		if k := module.LabelInt(c.Labels, module.LabelKeep, 0); k > 0 {
 			if repo := imageRepository(c.Image); repo != "" && keepByRepo[repo] < k {
 				keepByRepo[repo] = k
@@ -53,34 +81,32 @@ func PruneOldImages(serviceContext *svc.ServiceContext) {
 	images, err := serviceContext.DockerClient.ImageList(ctx, image.ListOptions{})
 	if err != nil {
 		logx.Errorf("清理旧镜像：获取镜像列表失败: %v", err)
-		return
+		return report
 	}
 
-	remove := func(img image.Summary, reason string) {
-		short := img.ID
-		if len(short) > 19 {
-			short = short[:19]
-		}
+	handle := func(img image.Summary, repo, tag string) {
+		item := PruneItem{ID: img.ID, Repo: repo, Tag: tag, Size: img.Size}
 		if inUse[img.ID] {
+			report.SkippedUsed = append(report.SkippedUsed, repo+":"+tag)
 			return
 		}
+		report.Candidates = append(report.Candidates, item)
 		if dryRun {
-			logx.Infof("清理旧镜像（试运行）：将删除 %s，%s", short, reason)
 			return
 		}
 		if _, removeErr := serviceContext.DockerClient.ImageRemove(ctx, img.ID, image.RemoveOptions{PruneChildren: true}); removeErr != nil {
-			logx.Errorf("清理旧镜像：删除 %s 失败: %v", short, removeErr)
+			logx.Errorf("清理旧镜像：删除 %s 失败: %v", item.Repo+":"+item.Tag, removeErr)
 			return
 		}
-		logx.Infof("清理旧镜像：已删除 %s（%s）", short, reason)
+		report.Removed = append(report.Removed, item)
+		report.FreedBytes += img.Size
 	}
 
 	groups := make(map[string][]image.Summary)
+	var dangling []image.Summary
 	for _, img := range images {
 		if len(img.RepoTags) == 0 {
-			if pruneDangling {
-				remove(img, "无标签镜像")
-			}
+			dangling = append(dangling, img)
 			continue
 		}
 		repo := imageRepository(img.RepoTags[0])
@@ -99,11 +125,23 @@ func PruneOldImages(serviceContext *svc.ServiceContext) {
 			continue
 		}
 		sort.Slice(list, func(i, j int) bool { return list[i].Created > list[j].Created })
-		reason := "仓库 " + repo + " 仅保留最近 " + strconv.Itoa(repoKeep) + " 个版本"
 		for _, img := range list[repoKeep:] {
-			remove(img, reason)
+			tag := "latest"
+			if parts := strings.Split(img.RepoTags[0], ":"); len(parts) > 1 {
+				tag = parts[len(parts)-1]
+			}
+			handle(img, repo, tag)
 		}
 	}
+
+	if pruneDangling {
+		for _, img := range dangling {
+			handle(img, "<none>", "<none>")
+		}
+	}
+
+	logx.Infof("清理旧镜像：仓库 %d 组，keep=%d，dryRun=%v", len(groups), keep, dryRun)
+	return report
 }
 
 // imageRepository 从 "host:port/repo:tag" 里取出仓库部分（去掉 tag）
