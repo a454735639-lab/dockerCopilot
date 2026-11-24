@@ -19,6 +19,8 @@ import (
 // ImageCheckList 检查更新处理后的镜像列表
 type ImageCheckList struct {
 	NeedUpdate bool
+	Digest     string // 远端 digest，用于"发现新版本"通知去重
+	Image      string // 仓库:tag，便于通知里直接展示
 }
 
 // ImageUpdateData 镜像更新检查结果。
@@ -47,6 +49,17 @@ func (i *ImageUpdateData) Get(imageID string) (ImageCheckList, bool) {
 	v, ok := i.data[imageID]
 	i.mu.RUnlock()
 	return v, ok
+}
+
+// Snapshot 返回当前检查结果的副本，供通知等只读场景使用
+func (i *ImageUpdateData) Snapshot() map[string]ImageCheckList {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	out := make(map[string]ImageCheckList, len(i.data))
+	for k, v := range i.data {
+		out[k] = v
+	}
+	return out
 }
 
 func (i *ImageUpdateData) replace(next map[string]ImageCheckList) {
@@ -123,7 +136,11 @@ func (i *ImageUpdateData) checkSingleImage(image types.Image) (ImageCheckList, b
 		logx.Info(image.ImageName + ":" + image.ImageTag + " need update")
 		logx.Infof("localRepoDigests: %v, remoteDigest: %s", image.RepoDigests, remoteDigest)
 	}
-	return ImageCheckList{NeedUpdate: needUpdate}, true
+	return ImageCheckList{
+		NeedUpdate: needUpdate,
+		Digest:     remoteDigest,
+		Image:      image.ImageName + ":" + image.ImageTag,
+	}, true
 }
 
 func BuildManifestURL(image types.Image) (string, error) {

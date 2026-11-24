@@ -265,6 +265,7 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 			return
 		}
 		serviceContext.HubImageInfo.CheckUpdate(list)
+		NotifyAvailable(serviceContext)
 	}()
 
 	if PruneEnabled() {

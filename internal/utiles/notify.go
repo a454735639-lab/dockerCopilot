@@ -46,6 +46,32 @@ func NotifyUpdate(p NotifyPayload) {
 	}()
 }
 
+var notifiedAvailable sync.Map // 镜像:tag -> 已通知过的远端 digest
+
+// NotifyAvailable 每轮检查结束后，对"有新版本"的镜像推一条通知。
+// 同一 digest 只推一次，不会每小时重复轰炸。
+// 不开启 AUTO_UPDATE 时，它等价于 Watchtower 的 monitor-only：只提醒、不动容器。
+func NotifyAvailable(serviceContext *svc.ServiceContext) {
+	if strings.TrimSpace(os.Getenv("NOTIFY_URL")) == "" {
+		return
+	}
+	for _, item := range serviceContext.HubImageInfo.Snapshot() {
+		if !item.NeedUpdate || item.Digest == "" || item.Image == "" {
+			continue
+		}
+		if prev, ok := notifiedAvailable.Load(item.Image); ok && prev == item.Digest {
+			continue
+		}
+		notifiedAvailable.Store(item.Image, item.Digest)
+		NotifyUpdate(NotifyPayload{
+			Container: "-",
+			Image:     item.Image,
+			Result:    "available",
+			Message:   "发现新版本（尚未更新）",
+		})
+	}
+}
+
 func sendNotify(rawURL string, p NotifyPayload) error {
 	body, contentType, err := buildNotifyBody(rawURL, p)
 	if err != nil {
@@ -108,10 +134,11 @@ func buildNotifyBody(rawURL string, p NotifyPayload) ([]byte, string, error) {
 
 func notifyText(p NotifyPayload) string {
 	icon := map[string]string{
-		"success":  "✅",
-		"skipped":  "⏭",
-		"failed":   "❌",
-		"rollback": "↩️",
+		"success":   "✅",
+		"skipped":   "⏭",
+		"failed":    "❌",
+		"rollback":  "↩️",
+		"available": "🆕",
 	}[p.Result]
 	if icon == "" {
 		icon = "ℹ️"

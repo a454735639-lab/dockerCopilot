@@ -85,7 +85,10 @@ export const customImageLogos = {
 		// 启动时 Docker 尚未就绪是常态：记日志继续，交给每小时的任务重试
 		logx.Errorf("启动时获取镜像列表失败: %v", err)
 	}
-	go ctx.HubImageInfo.CheckUpdate(list)
+	go func() {
+		ctx.HubImageInfo.CheckUpdate(list)
+		utiles.NotifyAvailable(ctx)
+	}()
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
 		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 	)))
@@ -97,6 +100,7 @@ export const customImageLogos = {
 			return
 		}
 		ctx.HubImageInfo.CheckUpdate(list)
+		utiles.NotifyAvailable(ctx)
 	})
 	if err != nil {
 		logx.Errorf("panic添加定时任务出错: %v", err)
