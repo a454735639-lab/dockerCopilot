@@ -12,6 +12,7 @@ import (
 	"net/http"
 	url2 "net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,27 +20,61 @@ import (
 type ImageCheckList struct {
 	NeedUpdate bool
 }
+
+// ImageUpdateData 镜像更新检查结果。
+// 每轮检查先算出一张新表再整体替换：既避免 HTTP 请求与定时任务并发读写同一张 map
+// （Go 对 map 并发读写是 fatal error，不可 recover），也让本轮检查失败的条目自动失效，
+// 不会残留在面板上变成"一直有更新"。
 type ImageUpdateData struct {
-	Data map[string]ImageCheckList
+	mu   sync.RWMutex
+	data map[string]ImageCheckList
 }
 
 const ContentDigestHeader = "Docker-Content-Digest"
 
+// 自身镜像名（大小写不敏感），检查时跳过，避免把自己标成"有更新"
+const selfImageName = "dockercopilot"
+
 func NewImageCheck() *ImageUpdateData {
 	return &ImageUpdateData{
-		Data: map[string]ImageCheckList{},
-	}
-}
-func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
-	for _, image := range imageList {
-		if strings.Contains(image.ImageName, "0nlylty/dockercopilot") {
-			continue
-		}
-		i.checkSingleImage(image)
+		data: map[string]ImageCheckList{},
 	}
 }
 
-func (i *ImageUpdateData) checkSingleImage(image types.Image) {
+// Get 并发安全地读取某个镜像的检查结果
+func (i *ImageUpdateData) Get(imageID string) (ImageCheckList, bool) {
+	i.mu.RLock()
+	v, ok := i.data[imageID]
+	i.mu.RUnlock()
+	return v, ok
+}
+
+func (i *ImageUpdateData) replace(next map[string]ImageCheckList) {
+	i.mu.Lock()
+	i.data = next
+	i.mu.Unlock()
+}
+
+func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
+	next := make(map[string]ImageCheckList, len(imageList))
+	for _, image := range imageList {
+		if strings.Contains(strings.ToLower(image.ImageName), selfImageName) {
+			continue
+		}
+		if result, ok := i.checkSingleImage(image); ok {
+			next[image.ID] = result
+		}
+	}
+	i.replace(next)
+}
+
+// checkSingleImage 第二个返回值表示本轮检查是否得到结论；
+// false 时调用方不写入结果，上一轮的旧状态随之失效。
+func (i *ImageUpdateData) checkSingleImage(image types.Image) (ImageCheckList, bool) {
+	if len(image.RepoDigests) == 0 {
+		logx.Error("未在本地获取到repoDigest" + image.ImageName + ":" + image.ImageTag)
+		return ImageCheckList{}, false
+	}
 	token, err := GetToken(image, "")
 	if err != nil {
 		logx.Error("获取token失败或者无需获取token，继续尝试检查" + err.Error())
@@ -47,21 +82,17 @@ func (i *ImageUpdateData) checkSingleImage(image types.Image) {
 	digestURL, err := BuildManifestURL(image)
 	if err != nil {
 		logx.Error("获取digestURL失败" + err.Error())
-		return
+		return ImageCheckList{}, false
 	}
 	remoteDigest, err := GetDigest(digestURL, token)
 	if err != nil {
 		logx.Error("获取digest失败" + err.Error())
-		return
+		return ImageCheckList{}, false
 	}
-	if len(image.RepoDigests) == 0 {
-		logx.Error("未在本地获取到repoDigest" + image.ImageName + ":" + image.ImageTag)
-		return
-	}
-	// 如果远程 digest 为空，无法比较，保持原状态
+	// 如果远程 digest 为空，无法比较，本轮不下结论
 	if remoteDigest == "" {
 		logx.Error("远程Digest为空，无法比较" + image.ImageName + ":" + image.ImageTag)
-		return
+		return ImageCheckList{}, false
 	}
 
 	// 修复：只要有一个本地 RepoDigests 与远程匹配，就认为不需要更新
@@ -88,7 +119,7 @@ func (i *ImageUpdateData) checkSingleImage(image types.Image) {
 		logx.Info(image.ImageName + ":" + image.ImageTag + " need update")
 		logx.Infof("localRepoDigests: %v, remoteDigest: %s", image.RepoDigests, remoteDigest)
 	}
-	i.Data[image.ID] = ImageCheckList{NeedUpdate: needUpdate}
+	return ImageCheckList{NeedUpdate: needUpdate}, true
 }
 
 func BuildManifestURL(image types.Image) (string, error) {

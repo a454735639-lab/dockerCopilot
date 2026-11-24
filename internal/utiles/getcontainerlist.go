@@ -29,10 +29,9 @@ func GetContainerList(ctx *svc.ServiceContext) ([]MyType.Container, error) {
 
 func CheckImageUpdate(ctx *svc.ServiceContext, containerListData []MyType.Container) []MyType.Container {
 	for i, v := range containerListData {
-		if _, ok := ctx.HubImageInfo.Data[v.ImageID]; ok {
-			if ctx.HubImageInfo.Data[v.ImageID].NeedUpdate {
-				containerListData[i].Update = true
-			}
+		// HubImageInfo 现在是并发安全的读取接口
+		if info, ok := ctx.HubImageInfo.Get(v.ImageID); ok && info.NeedUpdate {
+			containerListData[i].Update = true
 		}
 	}
 	return containerListData
