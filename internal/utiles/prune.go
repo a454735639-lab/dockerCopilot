@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/onlyLTY/dockerCopilot/internal/module"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -38,8 +39,15 @@ func PruneOldImages(serviceContext *svc.ServiceContext) {
 		return
 	}
 	inUse := make(map[string]bool, len(containers))
+	keepByRepo := make(map[string]int)
 	for _, c := range containers {
 		inUse[c.ImageID] = true
+		// 容器标签 dockercopilot.keep=N 可以抬高它所用仓库的保留数量
+		if k := module.LabelInt(c.Labels, module.LabelKeep, 0); k > 0 {
+			if repo := imageRepository(c.Image); repo != "" && keepByRepo[repo] < k {
+				keepByRepo[repo] = k
+			}
+		}
 	}
 
 	images, err := serviceContext.DockerClient.ImageList(ctx, image.ListOptions{})
@@ -83,12 +91,16 @@ func PruneOldImages(serviceContext *svc.ServiceContext) {
 	}
 
 	for repo, list := range groups {
-		if len(list) <= keep {
+		repoKeep := keep
+		if k := keepByRepo[repo]; k > repoKeep {
+			repoKeep = k
+		}
+		if len(list) <= repoKeep {
 			continue
 		}
 		sort.Slice(list, func(i, j int) bool { return list[i].Created > list[j].Created })
-		reason := "仓库 " + repo + " 仅保留最近 " + strconv.Itoa(keep) + " 个版本"
-		for _, img := range list[keep:] {
+		reason := "仓库 " + repo + " 仅保留最近 " + strconv.Itoa(repoKeep) + " 个版本"
+		for _, img := range list[repoKeep:] {
 			remove(img, reason)
 		}
 	}

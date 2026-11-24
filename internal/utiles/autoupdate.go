@@ -64,6 +64,10 @@ func AutoUpdateOnce(ctx *svc.ServiceContext) {
 			strings.Contains(strings.ToLower(v.Image), "dockercopilot") {
 			continue
 		}
+		if !module.LabelBool(v.Labels, module.LabelAutoUpdate, true) {
+			logx.Infof("自动更新：%s 打了 auto-update=false，跳过", name)
+			continue
+		}
 		if len(include) > 0 && !module.MatchAny(include, name) {
 			continue
 		}

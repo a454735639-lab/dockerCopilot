@@ -36,6 +36,10 @@ func CheckImageUpdate(ctx *svc.ServiceContext, containerListData []MyType.Contai
 		if !ok || !info.NeedUpdate {
 			continue
 		}
+		// 容器标签 dockercopilot.check=false：这个容器不要更新提示
+		if !module.LabelBool(v.Labels, module.LabelCheck, true) {
+			continue
+		}
 		// 容器级忽略名单：镜像有更新，但这个容器用户不想看到/不想动
 		ignored := false
 		for _, n := range v.Names {
