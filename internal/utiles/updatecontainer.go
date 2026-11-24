@@ -17,6 +17,23 @@ import (
 
 func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string, imageNameAndTag string, delOldContainer bool, taskID string) (err error) {
 	ctx := context.Background()
+	startedAt := time.Now()
+	notifyResult := "success"
+	notifyDetail := "更新完成"
+	// 通知最后执行（defer 后进先出），能拿到回滚或跳过之后的真实结果
+	defer func() {
+		if err != nil && notifyResult == "success" {
+			notifyResult = "failed"
+			notifyDetail = err.Error()
+		}
+		NotifyUpdate(NotifyPayload{
+			Container:  name,
+			Image:      imageNameAndTag,
+			Result:     notifyResult,
+			Message:    notifyDetail,
+			DurationMS: time.Since(startedAt).Milliseconds(),
+		})
+	}()
 	serviceContext.UpdateProgress(taskID, svc.TaskProgress{
 		TaskID:     taskID,
 		Percentage: 0,
@@ -78,6 +95,8 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		if e := serviceContext.DockerClient.ContainerStart(ctx, id, container.StartOptions{}); e != nil {
 			logx.Errorf("回滚：启动旧容器失败: %v", e)
 		}
+		notifyResult = "rollback"
+		notifyDetail = fmt.Sprintf("%v；已回滚到旧容器", err)
 		serviceContext.UpdateProgress(taskID, svc.TaskProgress{
 			TaskID:     taskID,
 			Percentage: 100,
@@ -121,6 +140,8 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 
 	// 镜像没变就不要白停一次服务：比对拉取后的镜像 ID 与容器当前镜像 ID
 	if imgInspect, _, inspectErr := serviceContext.DockerClient.ImageInspectWithRaw(ctx, imageNameAndTag); inspectErr == nil && imgInspect.ID == oldImageID {
+		notifyResult = "skipped"
+		notifyDetail = "远端镜像与本地一致，未重建容器"
 		serviceContext.UpdateProgress(taskID, svc.TaskProgress{
 			TaskID:     taskID,
 			Percentage: 100,
@@ -225,7 +246,8 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 	if delOldContainer {
 		if removeErr := serviceContext.DockerClient.ContainerRemove(context.Background(), id, container.RemoveOptions{}); removeErr != nil {
 			logx.Errorf("删除旧容器失败（新容器已正常运行）: %v", removeErr)
-			oldTaskProgress.DetailMsg = "更新成功，但旧容器删除失败：" + removeErr.Error()
+			notifyDetail = "更新成功，但旧容器删除失败：" + removeErr.Error()
+			oldTaskProgress.DetailMsg = notifyDetail
 		}
 	}
 	oldTaskProgress.Message = "更新成功"
