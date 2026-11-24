@@ -59,7 +59,13 @@ func PruneImagesByRepo(serviceContext *svc.ServiceContext, keep int, pruneDangli
 	if keep < 1 {
 		keep = 1
 	}
-	report := PruneReport{Keep: keep, DryRun: dryRun}
+	report := PruneReport{
+		Keep:        keep,
+		DryRun:      dryRun,
+		Candidates:  []PruneItem{},
+		Removed:     []PruneItem{},
+		SkippedUsed: []string{},
+	}
 	ctx := context.Background()
 
 	containers, err := serviceContext.DockerClient.ContainerList(ctx, container.ListOptions{All: true})
