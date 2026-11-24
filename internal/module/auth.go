@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -161,23 +162,58 @@ func GetRegistryAddress(imageRef string) (string, error) {
 	}
 
 	address := ref.Domain(normalizedRef)
+	if address != DefaultRegistryDomain {
+		return address, nil
+	}
+	return dockerHubHost(), nil
+}
 
-	if address == DefaultRegistryDomain {
-		if checkHost(DefaultRegistryHost) {
-			address = DefaultRegistryHost
-		} else {
-			for _, host := range DefaultAcceleratorHostList {
-				if checkHost(host) {
-					address = host
-					break
-				}
+// Docker Hub 地址解析结果（官方或某个可用加速器）。
+// 结果只取决于本机网络，没必要每张镜像、每轮检查都重新探测一遍：
+// 原先每张镜像要现场探测 1 次官方 + 最多 10 个加速器（各 5s 超时），
+// 再乘 2（取 token 与取 manifest 各一次），Hub 不通时 30 张镜像一轮能跑几十分钟。
+var (
+	registryHostMu     sync.Mutex
+	registryHostCached string
+	registryHostExpiry time.Time
+)
+
+const (
+	// 探测成功后的缓存时长
+	registryHostTTL = 10 * time.Minute
+	// 全部探测失败时的缓存时长：短一些，网络恢复后能尽快用上
+	registryHostFailTTL = 2 * time.Minute
+)
+
+func dockerHubHost() string {
+	registryHostMu.Lock()
+	defer registryHostMu.Unlock()
+
+	now := time.Now()
+	if registryHostCached != "" && now.Before(registryHostExpiry) {
+		return registryHostCached
+	}
+
+	host := DefaultRegistryHost
+	ttl := registryHostTTL
+	if !checkHost(DefaultRegistryHost) {
+		host = ""
+		for _, candidate := range DefaultAcceleratorHostList {
+			if checkHost(candidate) {
+				host = candidate
+				break
 			}
 		}
-		if address == DefaultRegistryDomain {
-			address = DefaultRegistryHost
+		if host == "" {
+			host = DefaultRegistryHost
+			ttl = registryHostFailTTL
 		}
 	}
-	return address, nil
+
+	registryHostCached = host
+	registryHostExpiry = now.Add(ttl)
+	logx.Infof("registry host 解析结果: %s（缓存 %s）", host, ttl)
+	return host
 }
 
 func checkHost(host string) bool {
