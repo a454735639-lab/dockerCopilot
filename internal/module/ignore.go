@@ -20,11 +20,12 @@ var (
 )
 
 func loadIgnore() {
-	ignoreImages = splitEnvList("IGNORE_IMAGES")
-	ignoreContainers = splitEnvList("IGNORE_CONTAINERS")
+	ignoreImages = EnvList("IGNORE_IMAGES")
+	ignoreContainers = EnvList("IGNORE_CONTAINERS")
 }
 
-func splitEnvList(key string) []string {
+// EnvList 读取逗号分隔的环境变量，返回小写去空后的列表
+func EnvList(key string) []string {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return nil
@@ -40,7 +41,8 @@ func splitEnvList(key string) []string {
 	return out
 }
 
-func matchAnyPattern(patterns []string, value string) bool {
+// MatchAny 大小写不敏感的通配匹配（path.Match 语义）
+func MatchAny(patterns []string, value string) bool {
 	if len(patterns) == 0 {
 		return false
 	}
@@ -59,12 +61,12 @@ func matchAnyPattern(patterns []string, value string) bool {
 // IgnoredImage 判断镜像是否在忽略名单里
 func IgnoredImage(imageName, imageTag string) bool {
 	ignoreOnce.Do(loadIgnore)
-	return matchAnyPattern(ignoreImages, imageName+":"+imageTag) ||
-		matchAnyPattern(ignoreImages, imageName)
+	return MatchAny(ignoreImages, imageName+":"+imageTag) ||
+		MatchAny(ignoreImages, imageName)
 }
 
 // IgnoredContainer 判断容器是否在忽略名单里（传不含前导 / 的容器名）
 func IgnoredContainer(name string) bool {
 	ignoreOnce.Do(loadIgnore)
-	return matchAnyPattern(ignoreContainers, name)
+	return MatchAny(ignoreContainers, name)
 }

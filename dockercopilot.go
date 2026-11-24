@@ -82,8 +82,8 @@ export const customImageLogos = {
 
 	list, err := utiles.GetImagesList(ctx)
 	if err != nil {
-		logx.Errorf("panic获取镜像列表出错: %v", err)
-		panic(err)
+		// 启动时 Docker 尚未就绪是常态：记日志继续，交给每小时的任务重试
+		logx.Errorf("启动时获取镜像列表失败: %v", err)
 	}
 	go ctx.HubImageInfo.CheckUpdate(list)
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
@@ -92,14 +92,25 @@ export const customImageLogos = {
 	_, err = corndanmu.AddFunc("30 * * * *", func() {
 		list, err := utiles.GetImagesList(ctx)
 		if err != nil {
-			logx.Errorf("panic获取镜像列表出错: %v", err)
-			panic(err)
+			// 定时任务里 panic 会带崩整个进程，这里只记日志等下一轮
+			logx.Errorf("定时检查更新：获取镜像列表失败: %v", err)
+			return
 		}
 		ctx.HubImageInfo.CheckUpdate(list)
 	})
 	if err != nil {
 		logx.Errorf("panic添加定时任务出错: %v", err)
 		panic(err)
+	}
+	if utiles.AutoUpdateEnabled() {
+		if _, addErr := corndanmu.AddFunc(utiles.AutoUpdateCron(), func() {
+			logx.Info("定时自动更新：开始")
+			utiles.AutoUpdateOnce(ctx)
+		}); addErr != nil {
+			logx.Errorf("定时自动更新：cron 表达式无效（%s）: %v", utiles.AutoUpdateCron(), addErr)
+		} else {
+			logx.Infof("定时自动更新已开启: %s", utiles.AutoUpdateCron())
+		}
 	}
 	corndanmu.Start()
 	defer corndanmu.Stop()
