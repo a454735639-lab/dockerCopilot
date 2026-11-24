@@ -8,7 +8,11 @@ import (
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/zeromicro/go-zero/core/logx"
 	"os"
+	"sync"
 )
+
+// 同一容器的更新必须串行：连点两下会并发执行 stop/rename/create，最后留下无主容器或创建冲突
+var updatingContainers sync.Map
 
 type UpdateLogic struct {
 	logx.Logger
@@ -26,8 +30,14 @@ func NewUpdateLogic(ctx context.Context, svcCtx *svc.ServiceContext) *UpdateLogi
 
 func (l *UpdateLogic) Update(req *types.ContainerUpdateReq) (resp *types.Resp, err error) {
 	resp = &types.Resp{}
+	if _, loading := updatingContainers.LoadOrStore(req.Id, true); loading {
+		resp.Code = 409
+		resp.Msg = "该容器正在更新中，请等待当前任务完成"
+		return resp, nil
+	}
 	taskID := uuid.New().String()
 	go func() {
+		defer updatingContainers.Delete(req.Id)
 		// Catch any panic and log the error
 		defer func() {
 			if r := recover(); r != nil {

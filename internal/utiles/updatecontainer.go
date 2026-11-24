@@ -11,10 +11,11 @@ import (
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 	"io"
+	"strings"
 	"time"
 )
 
-func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string, imageNameAndTag string, delOldContainer bool, taskID string) error {
+func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string, imageNameAndTag string, delOldContainer bool, taskID string) (err error) {
 	ctx := context.Background()
 	serviceContext.UpdateProgress(taskID, svc.TaskProgress{
 		TaskID:     taskID,
@@ -43,6 +44,50 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 	oldTaskProgress.DetailMsg = "正在拉取新镜像"
 	serviceContext.UpdateProgress(taskID, oldTaskProgress)
 	serviceContext.DockerClient.NegotiateAPIVersion(ctx)
+
+	// 记录现场：旧容器的镜像 ID 与真实名字，用于「镜像没变就不重建」和失败回滚
+	inspectBefore, err := serviceContext.DockerClient.ContainerInspect(ctx, id)
+	if err != nil {
+		oldTaskProgress.Message = "获取容器信息失败"
+		oldTaskProgress.DetailMsg = err.Error()
+		oldTaskProgress.IsDone = true
+		serviceContext.UpdateProgress(taskID, oldTaskProgress)
+		return err
+	}
+	origName := strings.TrimPrefix(inspectBefore.Name, "/")
+	oldImageID := inspectBefore.Image
+	renamedTo := ""
+	newCreated := false
+	rollbackNeeded := false
+
+	// 失败回滚：把旧容器改名改回来并重新启动，避免「更新失败 = 服务停着」
+	defer func() {
+		if err == nil || !rollbackNeeded {
+			return
+		}
+		if newCreated {
+			if e := serviceContext.DockerClient.ContainerRemove(ctx, origName, container.RemoveOptions{Force: true}); e != nil {
+				logx.Errorf("回滚：删除新容器失败: %v", e)
+			}
+		}
+		if renamedTo != "" {
+			if e := serviceContext.DockerClient.ContainerRename(ctx, id, origName); e != nil {
+				logx.Errorf("回滚：容器名恢复失败: %v", e)
+			}
+		}
+		if e := serviceContext.DockerClient.ContainerStart(ctx, id, container.StartOptions{}); e != nil {
+			logx.Errorf("回滚：启动旧容器失败: %v", e)
+		}
+		serviceContext.UpdateProgress(taskID, svc.TaskProgress{
+			TaskID:     taskID,
+			Percentage: 100,
+			Name:       name,
+			Message:    "更新失败，已回滚",
+			DetailMsg:  fmt.Sprintf("%v；旧容器已恢复运行", err),
+			IsDone:     true,
+		})
+	}()
+
 	reader, err := serviceContext.DockerClient.ImagePull(ctx, imageNameAndTag, image.PullOptions{})
 	if err != nil {
 		oldTaskProgress.Message = "拉取镜像失败"
@@ -74,10 +119,24 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 	oldTaskProgress.Message = "拉取镜像成功"
 	oldTaskProgress.DetailMsg = "拉取镜像成功"
 
+	// 镜像没变就不要白停一次服务：比对拉取后的镜像 ID 与容器当前镜像 ID
+	if imgInspect, _, inspectErr := serviceContext.DockerClient.ImageInspectWithRaw(ctx, imageNameAndTag); inspectErr == nil && imgInspect.ID == oldImageID {
+		serviceContext.UpdateProgress(taskID, svc.TaskProgress{
+			TaskID:     taskID,
+			Percentage: 100,
+			Name:       name,
+			Message:    "已是最新镜像，无需重建容器",
+			DetailMsg:  "远端镜像与本地一致（image id 相同）",
+			IsDone:     true,
+		})
+		return nil
+	}
+
 	oldTaskProgress.Percentage = 30
 	oldTaskProgress.Message = "正在停止容器"
 	oldTaskProgress.DetailMsg = "正在停止容器"
 	serviceContext.UpdateProgress(taskID, oldTaskProgress)
+	rollbackNeeded = true
 	stopOptions := container.StopOptions{
 		Signal:  signal,
 		Timeout: &timeout,
@@ -99,7 +158,8 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 	oldTaskProgress.DetailMsg = "正在重命名旧容器"
 	serviceContext.UpdateProgress(taskID, oldTaskProgress)
 	currentDate := time.Now().Format("2006-01-02-15-04-05")
-	err = serviceContext.DockerClient.ContainerRename(context.Background(), id, name+"-"+currentDate)
+	renamedTarget := origName + "-" + currentDate
+	err = serviceContext.DockerClient.ContainerRename(context.Background(), id, renamedTarget)
 	if err != nil {
 		oldTaskProgress.Message = "重命名旧容器失败"
 		oldTaskProgress.DetailMsg = err.Error()
@@ -107,6 +167,7 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		serviceContext.UpdateProgress(taskID, oldTaskProgress)
 		return err
 	}
+	renamedTo = renamedTarget
 	oldTaskProgress.Message = "重命名旧容器成功"
 	oldTaskProgress.DetailMsg = "重命名旧容器成功"
 	oldTaskProgress.Percentage = 60
@@ -131,7 +192,7 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: inspectedContainer.NetworkSettings.Networks,
 	}
-	containerName := name
+	containerName := origName
 	_, err = serviceContext.DockerClient.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
 	if err != nil {
 		oldTaskProgress.Message = "创建新容器失败"
@@ -140,6 +201,7 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		serviceContext.UpdateProgress(taskID, oldTaskProgress)
 		return err
 	}
+	newCreated = true
 	oldTaskProgress.Message = "创建新容器成功"
 	oldTaskProgress.DetailMsg = "创建新容器成功"
 	oldTaskProgress.Percentage = 80
@@ -158,14 +220,12 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		serviceContext.UpdateProgress(taskID, oldTaskProgress)
 		return err
 	}
+	// 新容器已经在跑，旧容器删不掉只影响磁盘，不能让整次更新报失败
+	rollbackNeeded = false
 	if delOldContainer {
-		err = serviceContext.DockerClient.ContainerRemove(context.Background(), id, container.RemoveOptions{})
-		if err != nil {
-			oldTaskProgress.Message = "删除旧容器失败"
-			oldTaskProgress.DetailMsg = err.Error()
-			oldTaskProgress.IsDone = true
-			serviceContext.UpdateProgress(taskID, oldTaskProgress)
-			return err
+		if removeErr := serviceContext.DockerClient.ContainerRemove(context.Background(), id, container.RemoveOptions{}); removeErr != nil {
+			logx.Errorf("删除旧容器失败（新容器已正常运行）: %v", removeErr)
+			oldTaskProgress.DetailMsg = "更新成功，但旧容器删除失败：" + removeErr.Error()
 		}
 	}
 	oldTaskProgress.Message = "更新成功"
