@@ -27,6 +27,7 @@ const (
 	KeyPruneOldImages    = "PRUNE_OLD_IMAGES"
 	KeyPruneKeep         = "PRUNE_KEEP"
 	KeyPruneDangling     = "PRUNE_DANGLING"
+	KeyPruneDryRun       = "PRUNE_DRY_RUN"
 )
 
 // Config 就是上面那些键的可编辑版本（值统一用字符串，方便表单直接绑定）
@@ -42,6 +43,7 @@ type Config struct {
 	PruneOldImages    string `json:"pruneOldImages"`
 	PruneKeep         string `json:"pruneKeep"`
 	PruneDangling     string `json:"pruneDangling"`
+	PruneDryRun       string `json:"pruneDryRun"`
 }
 
 var (
@@ -63,6 +65,7 @@ var envKeys = map[string]string{
 	KeyPruneOldImages:    "pruneOldImages",
 	KeyPruneKeep:         "pruneKeep",
 	KeyPruneDangling:     "pruneDangling",
+	KeyPruneDryRun:       "pruneDryRun",
 }
 
 // Init 启动时读取已保存的配置；文件不存在或损坏时按空配置启动（退回环境变量）
@@ -195,6 +198,8 @@ func pick(c Config, field string) string {
 		return c.PruneKeep
 	case "pruneDangling":
 		return c.PruneDangling
+	case "pruneDryRun":
+		return c.PruneDryRun
 	}
 	return ""
 }
@@ -212,6 +217,7 @@ func normalize(c Config) Config {
 	c.PruneOldImages = trim(c.PruneOldImages)
 	c.PruneKeep = trim(c.PruneKeep)
 	c.PruneDangling = trim(c.PruneDangling)
+	c.PruneDryRun = trim(c.PruneDryRun)
 	if c.AutoUpdateCron == "" {
 		c.AutoUpdateCron = "0 4 * * *"
 	}
