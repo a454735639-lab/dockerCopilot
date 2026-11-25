@@ -41,7 +41,9 @@ type IdReq struct {
 }
 
 type LoginReq struct {
-	SecretKey string `form:"secretKey,optional"`
+	SecretKey   string `form:"secretKey,optional" json:"secretKey,optional"`
+	CaptchaId   string `form:"captchaId,optional" json:"captchaId,optional"`
+	CaptchaCode string `form:"captchaCode,optional" json:"captchaCode,optional"`
 }
 
 type MsgResp struct {

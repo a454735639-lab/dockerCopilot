@@ -36,6 +36,14 @@ func NewLoginLogic(ctx context.Context, svcCtx *svc.ServiceContext) *LoginLogic 
 func (l *LoginLogic) Login(req *types.LoginReq, clientIP string) (resp *types.Resp, err error) {
 	resp = &types.Resp{}
 
+	// 验证码先于限速计数：答错验证码不计入密钥失败次数
+	if !module.ValidateCaptcha(req.CaptchaId, req.CaptchaCode) {
+		resp.Code = 400
+		resp.Msg = "验证码错误或已过期，请刷新后重试"
+		resp.Data = map[string]string{"jwt": ""}
+		return resp, nil
+	}
+
 	if remain, locked := module.AuthLocked(clientIP); locked {
 		resp.Code = 429
 		resp.Msg = fmt.Sprintf("尝试次数过多，请 %d 秒后再试", int(remain.Seconds())+1)
