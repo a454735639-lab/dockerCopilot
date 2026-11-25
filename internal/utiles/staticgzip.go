@@ -14,7 +14,15 @@ import (
 //
 // 前端是编译期嵌进二进制的（//go:embed），go-zero 1.8 的 rest 没有内置压缩，
 // 结果 400 KB 的 JS 原样传输。资源文件名带 hash 且内容不变，所以压缩结果可以永久缓存。
-var gzipCache sync.Map // path -> []byte
+var gzipCache sync.Map // path -> gzipEntry
+
+// 压缩结果必须连同内容类型一起缓存：
+// 之前只存字节、命中时按扩展名猜类型，导致 /manager（无扩展名）被当成 text/plain，
+// 浏览器把 HTML 当源码显示。
+type gzipEntry struct {
+	data        []byte
+	contentType string
+}
 
 // GzipStatic 对文本类静态资源做 gzip；不支持压缩的请求/类型原样透传。
 func GzipStatic(next http.Handler) http.Handler {
@@ -25,7 +33,8 @@ func GzipStatic(next http.Handler) http.Handler {
 		}
 
 		if cached, ok := gzipCache.Load(r.URL.Path); ok {
-			writeGzip(w, cached.([]byte), contentTypeByPath(r.URL.Path))
+			entry := cached.(gzipEntry)
+			writeGzip(w, entry.data, entry.contentType)
 			return
 		}
 
@@ -47,7 +56,7 @@ func GzipStatic(next http.Handler) http.Handler {
 			}
 			_ = zw.Close()
 			compressed := buf.Bytes()
-			gzipCache.Store(r.URL.Path, compressed)
+			gzipCache.Store(r.URL.Path, gzipEntry{data: compressed, contentType: contentType})
 
 			copyHeader(w, result.Header)
 			writeGzip(w, compressed, contentType)
@@ -87,19 +96,4 @@ func compressible(contentType string) bool {
 		return true
 	}
 	return false
-}
-
-func contentTypeByPath(path string) string {
-	switch {
-	case strings.HasSuffix(path, ".js"):
-		return "text/javascript; charset=utf-8"
-	case strings.HasSuffix(path, ".css"):
-		return "text/css; charset=utf-8"
-	case strings.HasSuffix(path, ".svg"):
-		return "image/svg+xml"
-	case strings.HasSuffix(path, ".json"):
-		return "application/json"
-	default:
-		return "text/plain; charset=utf-8"
-	}
 }
