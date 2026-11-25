@@ -2,6 +2,7 @@ package auth
 
 import (
 	"github.com/onlyLTY/dockerCopilot/internal/logic/auth"
+	"github.com/onlyLTY/dockerCopilot/internal/module"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/zeromicro/go-zero/rest/httpx"
@@ -19,7 +20,7 @@ func LoginHandler(ctx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 		l := auth.NewLoginLogic(r.Context(), ctx)
-		resp, err := l.Login(&req)
+		resp, err := l.Login(&req, module.ClientIP(r))
 		if err != nil {
 			httpx.WriteJson(w, resp.Code, resp)
 			return
