@@ -104,7 +104,7 @@ func renderCaptcha(code string) string {
 		rot := -18 + captchaRandInt(36)
 		c := colors[captchaRandInt(len(colors))]
 		fmt.Fprintf(&b, `<text x="%d" y="%d" font-family="monospace" font-size="22" font-weight="700" fill="%s" transform="rotate(%d %d %d)">%c</text>`,
-			x, y, c, rot, x, y)
+			x, y, c, rot, x, y, ch)
 	}
 	for i := 0; i < 30; i++ {
 		fmt.Fprintf(&b, `<circle cx="%d" cy="%d" r="1" fill="#94a3b8" opacity="0.4"/>`,
