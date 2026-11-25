@@ -32,6 +32,7 @@ const (
 	KeyWecomSecret       = "WECOM_SECRET"
 	KeyWecomAgentID      = "WECOM_AGENT_ID"
 	KeyWecomToUser       = "WECOM_TOUSER"
+	KeyWecomProxy        = "WECOM_PROXY"
 )
 
 // Config 就是上面那些键的可编辑版本（值统一用字符串，方便表单直接绑定）
@@ -52,6 +53,7 @@ type Config struct {
 	WecomSecret       string `json:"wecomSecret"`
 	WecomAgentID      string `json:"wecomAgentId"`
 	WecomToUser       string `json:"wecomToUser"`
+	WecomProxy        string `json:"wecomProxy"`
 }
 
 var (
@@ -78,6 +80,7 @@ var envKeys = map[string]string{
 	KeyWecomSecret:       "wecomSecret",
 	KeyWecomAgentID:      "wecomAgentId",
 	KeyWecomToUser:       "wecomToUser",
+	KeyWecomProxy:        "wecomProxy",
 }
 
 // Init 启动时读取已保存的配置；文件不存在或损坏时按空配置启动（退回环境变量）
@@ -220,6 +223,8 @@ func pick(c Config, field string) string {
 		return c.WecomAgentID
 	case "wecomToUser":
 		return c.WecomToUser
+	case "wecomProxy":
+		return c.WecomProxy
 	}
 	return ""
 }
@@ -242,6 +247,7 @@ func normalize(c Config) Config {
 	c.WecomSecret = trim(c.WecomSecret)
 	c.WecomAgentID = trim(c.WecomAgentID)
 	c.WecomToUser = trim(c.WecomToUser)
+	c.WecomProxy = trim(c.WecomProxy)
 	if c.AutoUpdateCron == "" {
 		c.AutoUpdateCron = "0 4 * * *"
 	}

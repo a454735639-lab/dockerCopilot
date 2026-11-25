@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -238,14 +238,44 @@ func getWecomToken(corpID, secret string) (string, error) {
 	return wecomTokenCache, nil
 }
 
-// fetchJSON GET 一个 JSON 接口并返回原始字节
+// wecomHTTPClient 企业微信专用 HTTP 客户端。
+// NAS 上通常设了 HTTP_PROXY/HTTPS_PROXY（走国际代理），但 qyapi.weixin.qq.com 是国内 API，
+// 走代理反而慢甚至不通。WECOM_PROXY 可单独指定：
+//
+//	"none"   直连（不走系统代理，默认值）
+//	""       跟随系统 HTTP_PROXY/HTTPS_PROXY
+//	其他     走指定代理（如 socks5://... 或 http://...）
+func wecomHTTPClient() *http.Client {
+	proxyURL := strings.TrimSpace(settings.Str("WECOM_PROXY"))
+	switch {
+	case proxyURL == "" || proxyURL == "none":
+		return &http.Client{
+			Timeout: 8 * time.Second,
+			Transport: &http.Transport{
+				Proxy: nil, // 直连，不走系统代理
+			},
+		}
+	default:
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return &http.Client{Timeout: 8 * time.Second}
+		}
+		return &http.Client{
+			Timeout: 8 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(parsed),
+			},
+		}
+	}
+}
+
+// fetchJSON GET 一个 JSON 接口并返回原始字节（走企业微信专用客户端）
 func fetchJSON(reqURL string) ([]byte, error) {
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := wecomHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -284,8 +314,7 @@ func sendWecomApp(p NotifyPayload) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := wecomHTTPClient().Do(req)
 	if err != nil {
 		return err
 	}
