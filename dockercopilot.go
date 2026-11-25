@@ -160,9 +160,9 @@ func RegisterHandlers(engine *rest.Server) {
 		log.Fatal(err)
 	}
 
-	frontFileServer := http.StripPrefix("/manager", http.FileServer(http.FS(frontFS)))
+	frontFileServer := utiles.GzipStatic(http.StripPrefix("/manager", http.FileServer(http.FS(frontFS))))
 
-	assetsHandler := http.FileServer(http.FS(frontFS))
+	assetsHandler := utiles.GzipStatic(http.FileServer(http.FS(frontFS)))
 
 	// Serve custom icons
 	iconFileServer := http.StripPrefix("/src/config/image/", http.FileServer(http.Dir("/data/config/image")))
