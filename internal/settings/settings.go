@@ -28,6 +28,10 @@ const (
 	KeyPruneKeep         = "PRUNE_KEEP"
 	KeyPruneDangling     = "PRUNE_DANGLING"
 	KeyPruneDryRun       = "PRUNE_DRY_RUN"
+	KeyWecomCorpID       = "WECOM_CORP_ID"
+	KeyWecomSecret       = "WECOM_SECRET"
+	KeyWecomAgentID      = "WECOM_AGENT_ID"
+	KeyWecomToUser       = "WECOM_TOUSER"
 )
 
 // Config 就是上面那些键的可编辑版本（值统一用字符串，方便表单直接绑定）
@@ -44,6 +48,10 @@ type Config struct {
 	PruneKeep         string `json:"pruneKeep"`
 	PruneDangling     string `json:"pruneDangling"`
 	PruneDryRun       string `json:"pruneDryRun"`
+	WecomCorpID       string `json:"wecomCorpId"`
+	WecomSecret       string `json:"wecomSecret"`
+	WecomAgentID      string `json:"wecomAgentId"`
+	WecomToUser       string `json:"wecomToUser"`
 }
 
 var (
@@ -66,6 +74,10 @@ var envKeys = map[string]string{
 	KeyPruneKeep:         "pruneKeep",
 	KeyPruneDangling:     "pruneDangling",
 	KeyPruneDryRun:       "pruneDryRun",
+	KeyWecomCorpID:       "wecomCorpId",
+	KeyWecomSecret:       "wecomSecret",
+	KeyWecomAgentID:      "wecomAgentId",
+	KeyWecomToUser:       "wecomToUser",
 }
 
 // Init 启动时读取已保存的配置；文件不存在或损坏时按空配置启动（退回环境变量）
@@ -200,6 +212,14 @@ func pick(c Config, field string) string {
 		return c.PruneDangling
 	case "pruneDryRun":
 		return c.PruneDryRun
+	case "wecomCorpId":
+		return c.WecomCorpID
+	case "wecomSecret":
+		return c.WecomSecret
+	case "wecomAgentId":
+		return c.WecomAgentID
+	case "wecomToUser":
+		return c.WecomToUser
 	}
 	return ""
 }
@@ -218,6 +238,10 @@ func normalize(c Config) Config {
 	c.PruneKeep = trim(c.PruneKeep)
 	c.PruneDangling = trim(c.PruneDangling)
 	c.PruneDryRun = trim(c.PruneDryRun)
+	c.WecomCorpID = trim(c.WecomCorpID)
+	c.WecomSecret = trim(c.WecomSecret)
+	c.WecomAgentID = trim(c.WecomAgentID)
+	c.WecomToUser = trim(c.WecomToUser)
 	if c.AutoUpdateCron == "" {
 		c.AutoUpdateCron = "0 4 * * *"
 	}

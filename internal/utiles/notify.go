@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"io"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +87,10 @@ func NotifyEvent(title, body string) {
 }
 
 func sendNotify(rawURL string, p NotifyPayload) error {
+	format := notifyFormat(rawURL)
+	if format == "wecom_app" {
+		return sendWecomApp(p)
+	}
 	body, contentType, err := buildNotifyBody(rawURL, p)
 	if err != nil {
 		return err
@@ -117,6 +123,15 @@ func buildNotifyBody(rawURL string, p NotifyPayload) ([]byte, string, error) {
 	const jsonType = "application/json; charset=utf-8"
 
 	switch format {
+	case "wecom_webhook":
+		body, err := json.Marshal(map[string]interface{}{
+			"msgtype":  "markdown",
+			"markdown": map[string]string{"content": notifyText(p)},
+		})
+		return body, jsonType, err
+	case "wecom_app":
+		// 应用消息走 sendWecomApp（两段请求），buildNotifyBody 不会到这里
+		return []byte("{}"), jsonType, nil
 	case "bark":
 		body, err := json.Marshal(map[string]string{
 			"title": "dockerCopilot " + p.Result,
@@ -160,6 +175,14 @@ func notifyText(p NotifyPayload) string {
 		icon, p.Container, p.Result, p.Image, p.Message, p.DurationMS)
 }
 
+// notifyFormat 解析生效的通知格式：显式设置 > 按地址推断
+func notifyFormat(rawURL string) string {
+	if f := strings.ToLower(strings.TrimSpace(settings.Str("NOTIFY_FORMAT"))); f != "" {
+		return f
+	}
+	return guessNotifyFormat(rawURL)
+}
+
 func guessNotifyFormat(rawURL string) string {
 	lower := strings.ToLower(rawURL)
 	switch {
@@ -171,7 +194,119 @@ func guessNotifyFormat(rawURL string) string {
 		return "feishu"
 	case strings.Contains(lower, "ntfy"):
 		return "ntfy"
+	case strings.Contains(lower, "qyapi.weixin.qq.com") && strings.Contains(lower, "webhook"):
+		return "wecom_webhook"
 	default:
 		return "generic"
 	}
+}
+
+// ---------------- 企业微信应用消息（MP 同款：Corpid+Secret+Agentid）----------------
+
+var (
+	wecomTokenMu     sync.Mutex
+	wecomTokenCache  string
+	wecomTokenExpiry time.Time
+)
+
+// getWecomToken 拉取并缓存 access_token（官方有效期 7200s，这里缓存 1 小时）
+func getWecomToken(corpID, secret string) (string, error) {
+	wecomTokenMu.Lock()
+	defer wecomTokenMu.Unlock()
+	if wecomTokenCache != "" && time.Now().Before(wecomTokenExpiry) {
+		return wecomTokenCache, nil
+	}
+	reqURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=%s&corpsecret=%s",
+		url.QueryEscape(corpID), url.QueryEscape(secret))
+	respBody, err := fetchJSON(reqURL)
+	if err != nil {
+		return "", err
+	}
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ErrCode     int    `json:"errcode"`
+		ErrMsg      string `json:"errmsg"`
+	}
+	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
+		return "", err
+	}
+	if tokenResp.ErrCode != 0 || tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("获取 access_token 失败: %s", tokenResp.ErrMsg)
+	}
+	wecomTokenCache = tokenResp.AccessToken
+	wecomTokenExpiry = time.Now().Add(1 * time.Hour)
+	return wecomTokenCache, nil
+}
+
+// fetchJSON GET 一个 JSON 接口并返回原始字节
+func fetchJSON(reqURL string) ([]byte, error) {
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(resp.Body)
+}
+
+// sendWecomApp 发送企业微信应用消息（touser 默认 @all）
+func sendWecomApp(p NotifyPayload) error {
+	corpID := strings.TrimSpace(settings.Str("WECOM_CORP_ID"))
+	secret := strings.TrimSpace(settings.Str("WECOM_SECRET"))
+	agentID := strings.TrimSpace(settings.Str("WECOM_AGENT_ID"))
+	toUser := strings.TrimSpace(settings.Str("WECOM_TOUSER"))
+	if corpID == "" || secret == "" || agentID == "" {
+		return fmt.Errorf("企业微信未配置完整（WECOM_CORP_ID / WECOM_SECRET / WECOM_AGENT_ID）")
+	}
+	if toUser == "" {
+		toUser = "@all"
+	}
+	token, err := getWecomToken(corpID, secret)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"touser":  toUser,
+		"msgtype": "text",
+		"agentid": agentID,
+		"text":    map[string]string{"content": notifyText(p)},
+	})
+	if err != nil {
+		return err
+	}
+	sendURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=%s", url.QueryEscape(token))
+	req, err := http.NewRequest("POST", sendURL, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	var sendResp struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if err := json.Unmarshal(raw, &sendResp); err != nil {
+		return err
+	}
+	if sendResp.ErrCode != 0 {
+		// token 失效时清缓存，下次重新取
+		if sendResp.ErrCode == 40014 || sendResp.ErrCode == 42001 {
+			wecomTokenMu.Lock()
+			wecomTokenCache = ""
+			wecomTokenExpiry = time.Time{}
+			wecomTokenMu.Unlock()
+		}
+		return fmt.Errorf("企业微信返回 errcode=%d: %s", sendResp.ErrCode, sendResp.ErrMsg)
+	}
+	return nil
 }
