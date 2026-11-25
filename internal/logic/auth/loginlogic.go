@@ -13,6 +13,10 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
+type JwtResponse struct {
+	Jwt string `json:"jwt"`
+}
+
 type LoginLogic struct {
 	logx.Logger
 	ctx    context.Context
