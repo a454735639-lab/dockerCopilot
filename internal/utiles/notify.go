@@ -74,6 +74,16 @@ func NotifyAvailable(serviceContext *svc.ServiceContext) {
 	}
 }
 
+// NotifyEvent 推送一条通用事件（如登录失败告警）
+func NotifyEvent(title, body string) {
+	NotifyUpdate(NotifyPayload{
+		Container: "-",
+		Image:     "-",
+		Result:    "event",
+		Message:   title + "：" + body,
+	})
+}
+
 func sendNotify(rawURL string, p NotifyPayload) error {
 	body, contentType, err := buildNotifyBody(rawURL, p)
 	if err != nil {
@@ -141,6 +151,7 @@ func notifyText(p NotifyPayload) string {
 		"failed":    "❌",
 		"rollback":  "↩️",
 		"available": "🆕",
+		"event":     "🔔",
 	}[p.Result]
 	if icon == "" {
 		icon = "ℹ️"

@@ -52,7 +52,7 @@ func main() {
 		logx.Errorf("请确认secretKey设置正确，要求非纯数字且大于八位")
 		os.Exit(1)
 	}
-	server := rest.MustNewServer(c.RestConf, rest.WithCors("*"), rest.WithUnauthorizedCallback(
+	server := rest.MustNewServer(c.RestConf, rest.WithUnauthorizedCallback(
 		func(w http.ResponseWriter, r *http.Request, err error) {
 			response := UnauthorizedResponse{
 				Code: http.StatusUnauthorized, // 401

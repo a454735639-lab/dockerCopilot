@@ -10,6 +10,7 @@ import (
 	"github.com/onlyLTY/dockerCopilot/internal/module"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
+	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -54,6 +55,7 @@ func (l *LoginLogic) Login(req *types.LoginReq, clientIP string) (resp *types.Re
 	if l.svcCtx.Config.Auth.AccessSecret != req.SecretKey {
 		if wait := module.RecordAuthFailure(clientIP); wait > 0 {
 			l.Errorf("登录失败次数过多，来源 %s 已锁定", clientIP)
+			utiles.NotifyEvent("登录已锁定", fmt.Sprintf("来源 %s 多次密钥错误，已锁定 10 分钟", clientIP))
 			resp.Code = 429
 			resp.Msg = "失败次数过多，已锁定 10 分钟"
 			resp.Data = map[string]string{"jwt": ""}
