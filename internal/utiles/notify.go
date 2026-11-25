@@ -26,6 +26,36 @@ type NotifyPayload struct {
 	Time       string `json:"time"`
 }
 
+// SendTestMessage 同步发送测试通知，用于验证配置（失败时返回错误）
+func SendTestMessage(rawURL string, p NotifyPayload) error {
+	if rawURL == "" {
+		return fmt.Errorf("通知地址为空")
+	}
+	format := notifyFormat(rawURL)
+	if format == "wecom_app" {
+		return sendWecomApp(p)
+	}
+	body, contentType, err := buildNotifyBody(rawURL, p)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", rawURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", contentType)
+	client := wecomHTTPClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("通知接口返回 %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // NotifyUpdate 异步推送更新结果：失败只记日志，绝不影响更新本身。
 //
 //	NOTIFY_URL=https://api.day.app/xxxx        （自动识别 bark）

@@ -135,6 +135,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 			{
 				Method:  http.MethodPost,
+				Path:    "/settings/test-notify",
+				Handler: settings.TestNotifyHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
 				Path:    "/settings",
 				Handler: settings.UpdateHandler(serverCtx),
 			},

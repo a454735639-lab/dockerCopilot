@@ -19,6 +19,14 @@ func GetHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
+func TestNotifyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		l := settingsLogic.NewTestNotifyLogic(r.Context(), svcCtx)
+		resp, _ := l.Test()
+		httpx.WriteJson(w, resp.Code, resp)
+	}
+}
+
 func UpdateHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.SettingsUpdateReq
