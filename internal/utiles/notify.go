@@ -20,40 +20,46 @@ import (
 type NotifyPayload struct {
 	Container  string `json:"container"`
 	Image      string `json:"image"`
-	Result     string `json:"result"` // success / skipped / failed / rollback
+	Result     string `json:"result"` // success / skipped / failed / rollback / test / available / event
 	Message    string `json:"message"`
 	DurationMS int64  `json:"duration_ms"`
 	Time       string `json:"time"`
 }
 
-// SendTestMessage 同步发送测试通知，用于验证配置（失败时返回错误）
-func SendTestMessage(rawURL string, p NotifyPayload) error {
-	if rawURL == "" {
-		return fmt.Errorf("通知地址为空")
+// NotifyConf 一次通知所需的全部配置。
+// 生产路径用 confFromSettings() 从已保存配置构造；
+// 测试路径从请求体表单当前值构造（不写数据库）。
+type NotifyConf struct {
+	URL        string
+	Format     string
+	CorpID     string
+	Secret     string
+	AgentID    string
+	ToUser     string
+	WecomProxy string
+}
+
+func confFromSettings() NotifyConf {
+	return NotifyConf{
+		URL:        settings.Str(settings.KeyNotifyURL),
+		Format:     settings.Str(settings.KeyNotifyFormat),
+		CorpID:     settings.Str(settings.KeyWecomCorpID),
+		Secret:     settings.Str(settings.KeyWecomSecret),
+		AgentID:    settings.Str(settings.KeyWecomAgentID),
+		ToUser:     settings.Str(settings.KeyWecomToUser),
+		WecomProxy: settings.Str(settings.KeyWecomProxy),
 	}
-	format := notifyFormat(rawURL)
-	if format == "wecom_app" {
-		return sendWecomApp(p)
+}
+
+// SendTestMessage 同步发送测试通知，失败时返回带具体原因的错误。
+// 企业微信应用模式不要求 URL；其它模式要求 URL 非空。
+func SendTestMessage(c NotifyConf, p NotifyPayload) error {
+	if notifyFormat(c, c.URL) == "wecom_app" {
+		clearWecomToken() // 测试时用表单当前值，强制重新取 token
+	} else if strings.TrimSpace(c.URL) == "" {
+		return fmt.Errorf("通知地址为空，请先填入 webhook 地址或选择企业微信应用模式")
 	}
-	body, contentType, err := buildNotifyBody(rawURL, p)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest("POST", rawURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", contentType)
-	client := wecomHTTPClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("通知接口返回 %d", resp.StatusCode)
-	}
-	return nil
+	return sendNotify(c, c.URL, p)
 }
 
 // NotifyUpdate 异步推送更新结果：失败只记日志，绝不影响更新本身。
@@ -66,15 +72,15 @@ func SendTestMessage(rawURL string, p NotifyPayload) error {
 //
 // 识别不准时用 NOTIFY_FORMAT=bark|dingtalk|feishu|ntfy|generic 强制指定。
 func NotifyUpdate(p NotifyPayload) {
-	rawURL := strings.TrimSpace(settings.Str("NOTIFY_URL"))
-	if rawURL == "" {
+	c := confFromSettings()
+	if strings.TrimSpace(c.URL) == "" {
 		return
 	}
 	if p.Time == "" {
 		p.Time = time.Now().Format(time.RFC3339)
 	}
 	go func() {
-		if err := sendNotify(rawURL, p); err != nil {
+		if err := sendNotify(c, c.URL, p); err != nil {
 			logx.Errorf("更新通知发送失败: %v", err)
 		}
 	}()
@@ -86,7 +92,7 @@ var notifiedAvailable sync.Map // 镜像:tag -> 已通知过的远端 digest
 // 同一 digest 只推一次，不会每小时重复轰炸。
 // 不开启 AUTO_UPDATE 时，它等价于 Watchtower 的 monitor-only：只提醒、不动容器。
 func NotifyAvailable(serviceContext *svc.ServiceContext) {
-	if strings.TrimSpace(settings.Str("NOTIFY_URL")) == "" {
+	if strings.TrimSpace(settings.Str(settings.KeyNotifyURL)) == "" {
 		return
 	}
 	for _, item := range serviceContext.HubImageInfo.Snapshot() {
@@ -116,12 +122,12 @@ func NotifyEvent(title, body string) {
 	})
 }
 
-func sendNotify(rawURL string, p NotifyPayload) error {
-	format := notifyFormat(rawURL)
+func sendNotify(c NotifyConf, rawURL string, p NotifyPayload) error {
+	format := notifyFormat(c, rawURL)
 	if format == "wecom_app" {
-		return sendWecomApp(p)
+		return sendWecomApp(c, p)
 	}
-	body, contentType, err := buildNotifyBody(rawURL, p)
+	body, contentType, err := buildNotifyBody(c, rawURL, p)
 	if err != nil {
 		return err
 	}
@@ -130,25 +136,19 @@ func sendNotify(rawURL string, p NotifyPayload) error {
 		return err
 	}
 	req.Header.Set("Content-Type", contentType)
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := wecomHTTPClient(c).Do(req)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("通知接口返回 %d", resp.StatusCode)
 	}
 	return nil
 }
 
-func buildNotifyBody(rawURL string, p NotifyPayload) ([]byte, string, error) {
-	format := strings.ToLower(strings.TrimSpace(settings.Str("NOTIFY_FORMAT")))
-	if format == "" {
-		format = guessNotifyFormat(rawURL)
-	}
+func buildNotifyBody(c NotifyConf, rawURL string, p NotifyPayload) ([]byte, string, error) {
+	format := notifyFormat(c, rawURL)
 	text := notifyText(p)
 	const jsonType = "application/json; charset=utf-8"
 
@@ -197,6 +197,7 @@ func notifyText(p NotifyPayload) string {
 		"rollback":  "↩️",
 		"available": "🆕",
 		"event":     "🔔",
+		"test":      "🧪",
 	}[p.Result]
 	if icon == "" {
 		icon = "ℹ️"
@@ -206,8 +207,8 @@ func notifyText(p NotifyPayload) string {
 }
 
 // notifyFormat 解析生效的通知格式：显式设置 > 按地址推断
-func notifyFormat(rawURL string) string {
-	if f := strings.ToLower(strings.TrimSpace(settings.Str("NOTIFY_FORMAT"))); f != "" {
+func notifyFormat(c NotifyConf, rawURL string) string {
+	if f := strings.ToLower(strings.TrimSpace(c.Format)); f != "" {
 		return f
 	}
 	return guessNotifyFormat(rawURL)
@@ -239,8 +240,15 @@ var (
 	wecomTokenExpiry time.Time
 )
 
+func clearWecomToken() {
+	wecomTokenMu.Lock()
+	wecomTokenCache = ""
+	wecomTokenExpiry = time.Time{}
+	wecomTokenMu.Unlock()
+}
+
 // getWecomToken 拉取并缓存 access_token（官方有效期 7200s，这里缓存 1 小时）
-func getWecomToken(corpID, secret string) (string, error) {
+func getWecomToken(c NotifyConf, corpID, secret string) (string, error) {
 	wecomTokenMu.Lock()
 	defer wecomTokenMu.Unlock()
 	if wecomTokenCache != "" && time.Now().Before(wecomTokenExpiry) {
@@ -248,7 +256,7 @@ func getWecomToken(corpID, secret string) (string, error) {
 	}
 	reqURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=%s&corpsecret=%s",
 		url.QueryEscape(corpID), url.QueryEscape(secret))
-	respBody, err := fetchJSON(reqURL)
+	respBody, err := fetchJSON(c, reqURL)
 	if err != nil {
 		return "", err
 	}
@@ -261,7 +269,7 @@ func getWecomToken(corpID, secret string) (string, error) {
 		return "", err
 	}
 	if tokenResp.ErrCode != 0 || tokenResp.AccessToken == "" {
-		return "", fmt.Errorf("获取 access_token 失败: %s", tokenResp.ErrMsg)
+		return "", fmt.Errorf("获取 access_token 失败(errcode=%d): %s", tokenResp.ErrCode, tokenResp.ErrMsg)
 	}
 	wecomTokenCache = tokenResp.AccessToken
 	wecomTokenExpiry = time.Now().Add(1 * time.Hour)
@@ -270,15 +278,17 @@ func getWecomToken(corpID, secret string) (string, error) {
 
 // wecomHTTPClient 企业微信专用 HTTP 客户端。
 // NAS 上通常设了 HTTP_PROXY/HTTPS_PROXY（走国际代理），但 qyapi.weixin.qq.com 是国内 API，
-// 走代理反而慢甚至不通。WECOM_PROXY 可单独指定：
+// 走代理反而慢甚至不通。c.WecomProxy 可单独指定：
 //
 //	"none"   直连（不走系统代理，默认值）
 //	""       跟随系统 HTTP_PROXY/HTTPS_PROXY
 //	其他     走指定代理（如 socks5://... 或 http://...）
-func wecomHTTPClient() *http.Client {
-	proxyURL := strings.TrimSpace(settings.Str("WECOM_PROXY"))
+func wecomHTTPClient(c NotifyConf) *http.Client {
+	proxyURL := strings.TrimSpace(c.WecomProxy)
 	switch {
-	case proxyURL == "" || proxyURL == "none":
+	case proxyURL == "":
+		return &http.Client{Timeout: 8 * time.Second}
+	case proxyURL == "none":
 		return &http.Client{
 			Timeout: 8 * time.Second,
 			Transport: &http.Transport{
@@ -300,12 +310,12 @@ func wecomHTTPClient() *http.Client {
 }
 
 // fetchJSON GET 一个 JSON 接口并返回原始字节（走企业微信专用客户端）
-func fetchJSON(reqURL string) ([]byte, error) {
+func fetchJSON(c NotifyConf, reqURL string) ([]byte, error) {
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := wecomHTTPClient().Do(req)
+	resp, err := wecomHTTPClient(c).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -314,18 +324,18 @@ func fetchJSON(reqURL string) ([]byte, error) {
 }
 
 // sendWecomApp 发送企业微信应用消息（touser 默认 @all）
-func sendWecomApp(p NotifyPayload) error {
-	corpID := strings.TrimSpace(settings.Str("WECOM_CORP_ID"))
-	secret := strings.TrimSpace(settings.Str("WECOM_SECRET"))
-	agentID := strings.TrimSpace(settings.Str("WECOM_AGENT_ID"))
-	toUser := strings.TrimSpace(settings.Str("WECOM_TOUSER"))
+func sendWecomApp(c NotifyConf, p NotifyPayload) error {
+	corpID := strings.TrimSpace(c.CorpID)
+	secret := strings.TrimSpace(c.Secret)
+	agentID := strings.TrimSpace(c.AgentID)
+	toUser := strings.TrimSpace(c.ToUser)
 	if corpID == "" || secret == "" || agentID == "" {
-		return fmt.Errorf("企业微信未配置完整（WECOM_CORP_ID / WECOM_SECRET / WECOM_AGENT_ID）")
+		return fmt.Errorf("企业微信应用模式凭证不完整（Corp ID / Secret / Agent ID 必填）")
 	}
 	if toUser == "" {
 		toUser = "@all"
 	}
-	token, err := getWecomToken(corpID, secret)
+	token, err := getWecomToken(c, corpID, secret)
 	if err != nil {
 		return err
 	}
@@ -344,7 +354,7 @@ func sendWecomApp(p NotifyPayload) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := wecomHTTPClient().Do(req)
+	resp, err := wecomHTTPClient(c).Do(req)
 	if err != nil {
 		return err
 	}
@@ -360,10 +370,7 @@ func sendWecomApp(p NotifyPayload) error {
 	if sendResp.ErrCode != 0 {
 		// token 失效时清缓存，下次重新取
 		if sendResp.ErrCode == 40014 || sendResp.ErrCode == 42001 {
-			wecomTokenMu.Lock()
-			wecomTokenCache = ""
-			wecomTokenExpiry = time.Time{}
-			wecomTokenMu.Unlock()
+			clearWecomToken()
 		}
 		return fmt.Errorf("企业微信返回 errcode=%d: %s", sendResp.ErrCode, sendResp.ErrMsg)
 	}
