@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
@@ -27,61 +26,72 @@ func NewTestNotifyLogic(ctx context.Context, svcCtx *svc.ServiceContext) *TestNo
 	}
 }
 
-// Test 发送一条测试消息（结果不写数据库），用于确认通知配置是否正确
-func (l *TestNotifyLogic) Test() (resp *types.Resp, err error) {
-	u := settings.Str("NOTIFY_URL")
-	if u == "" {
-		return &types.Resp{Code: 400, Msg: "通知地址未设置，请先在\"通知地址\"中填入 webhook 或 bark", Data: map[string]string{}}, nil
-	}
-	format := settings.Str("NOTIFY_FORMAT")
-	msg := "Docker Copilot 配置测试\n时间：" + time.Now().Format("2006-01-02 15:04:05")
-	result := ""
-	switch format {
-	case "bark":
-		result = "格式: Bark"
-	case "dingtalk":
-		result = "格式: 钉钉"
-	case "feishu":
-		result = "格式: 飞书"
-	case "ntfy":
-		result = "格式: Ntfy"
-	case "wecom_webhook":
-		result = "格式: 企业微信群机器人"
-	case "wecom_app":
-		corpID := strings.TrimSpace(settings.Str("WECOM_CORP_ID"))
-		secret := settings.Str("WECOM_SECRET")
-		agentID := strings.TrimSpace(settings.Str("WECOM_AGENT_ID"))
-		toUser := strings.TrimSpace(settings.Str("WECOM_TOUSER"))
-		if corpID == "" || secret == "" || agentID == "" {
-			return &types.Resp{Code: 400, Msg: "企业微信应用模式凭证不完整（缺少 Corp ID / Secret / Agent ID）", Data: map[string]string{}}, nil
-		}
-		if toUser == "" {
-			toUser = "@all"
-		}
-		result = fmt.Sprintf("格式: 企业微信应用(%s)", toUser)
-	default:
-		result = "格式: generic(webhook)"
+// Test 用请求体里的当前表单值发送一条测试消息（不写数据库）。
+func (l *TestNotifyLogic) Test(req *types.SettingsUpdateReq) (resp *types.Resp, err error) {
+	c := utiles.NotifyConf{
+		URL:        strings.TrimSpace(req.NotifyURL),
+		Format:     strings.ToLower(strings.TrimSpace(req.NotifyFormat)),
+		CorpID:     strings.TrimSpace(req.WecomCorpID),
+		Secret:     strings.TrimSpace(req.WecomSecret),
+		AgentID:    strings.TrimSpace(req.WecomAgentID),
+		ToUser:     strings.TrimSpace(req.WecomToUser),
+		WecomProxy: strings.TrimSpace(req.WecomProxy),
 	}
 
-	// 实际推送一次测试消息，错误会写日志并作为响应返回
+	format := c.Format
+	if format == "" {
+		format = guessFmt(c.URL)
+	}
+
+	// 校验：应用模式要三件套，其它模式要 URL
+	switch format {
+	case "wecom_app":
+		if c.CorpID == "" || c.Secret == "" || c.AgentID == "" {
+			return &types.Resp{Code: 400, Msg: "企业微信应用模式缺少 Corp ID / Secret / Agent ID（三项必填）", Data: map[string]string{}}, nil
+		}
+	default:
+		if c.URL == "" {
+			return &types.Resp{Code: 400, Msg: "通知地址为空，请填入 webhook 地址或切换为企业微信应用模式", Data: map[string]string{}}, nil
+		}
+	}
+
+	msg := "Docker Copilot 配置测试\n时间：" + time.Now().Format("2006-01-02 15:04:05")
 	payload := utiles.NotifyPayload{
 		Container: "-",
 		Image:     "-",
 		Result:    "test",
 		Message:   msg,
 	}
-	if sendErr := utiles.SendTestMessage(u, payload); sendErr != nil {
+	if sendErr := utiles.SendTestMessage(c, payload); sendErr != nil {
 		l.Errorf("测试通知失败: %v", sendErr)
 		return &types.Resp{
 			Code: 500,
 			Msg:  "测试失败: " + sendErr.Error(),
-			Data: map[string]string{"result": result},
+			Data: map[string]string{"format": format},
 		}, nil
 	}
 
 	return &types.Resp{
 		Code: 200,
-		Msg:  "已发送测试消息，请检查对应应用",
-		Data: map[string]string{"result": result},
+		Msg:  "已发送测试消息，请检查对应应用/群",
+		Data: map[string]string{"format": format},
 	}, nil
+}
+
+func guessFmt(rawURL string) string {
+	lower := strings.ToLower(rawURL)
+	switch {
+	case strings.Contains(lower, "api.day.app"):
+		return "bark"
+	case strings.Contains(lower, "oapi.dingtalk.com"):
+		return "dingtalk"
+	case strings.Contains(lower, "open.feishu.cn"), strings.Contains(lower, "open.larksuite.com"):
+		return "feishu"
+	case strings.Contains(lower, "ntfy"):
+		return "ntfy"
+	case strings.Contains(lower, "qyapi.weixin.qq.com") && strings.Contains(lower, "webhook"):
+		return "wecom_webhook"
+	default:
+		return "generic"
+	}
 }

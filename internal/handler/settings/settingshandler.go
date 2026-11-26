@@ -21,8 +21,18 @@ func GetHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 func TestNotifyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var req types.SettingsUpdateReq
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil || len(body) == 0 {
+			httpx.WriteJson(w, 400, &types.Resp{Code: 400, Msg: "请求体为空", Data: map[string]string{}})
+			return
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			httpx.WriteJson(w, 400, &types.Resp{Code: 400, Msg: "参数解析失败：" + err.Error(), Data: map[string]string{}})
+			return
+		}
 		l := settingsLogic.NewTestNotifyLogic(r.Context(), svcCtx)
-		resp, _ := l.Test()
+		resp, _ := l.Test(&req)
 		httpx.WriteJson(w, resp.Code, resp)
 	}
 }
