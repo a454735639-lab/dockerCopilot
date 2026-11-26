@@ -2,7 +2,6 @@ package settings
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
