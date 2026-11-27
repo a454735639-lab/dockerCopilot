@@ -50,6 +50,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 		[]rest.Route{
 			{
 				Method:  http.MethodPost,
+				Path:    "/auth/logout",
+				Handler: auth.LogoutHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
 				Path:    "/container/:id/rename",
 				Handler: container.RenameHandler(serverCtx),
 			},

@@ -58,6 +58,7 @@ type Config struct {
 
 var (
 	mu       sync.RWMutex
+	updateMu sync.Mutex // 串行化整次保存，避免"文件是 B、内存是 A"
 	current  Config
 	onChange []func()
 )
@@ -143,21 +144,23 @@ func EnvValues() map[string]string {
 
 // Update 覆盖并落盘，返回是否真的写入了文件
 func Update(c Config) error {
-	mu.Lock()
-	current = normalize(c)
-	raw, err := json.MarshalIndent(current, "", "  ")
+	updateMu.Lock()
+	defer updateMu.Unlock()
+
+	normalized := normalize(c)
+	raw, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
-		mu.Unlock()
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(Path), 0o755); err != nil {
-		mu.Unlock()
 		return err
 	}
+	// 先落盘再改内存：写失败时界面不能显示一个重启后会丢失的配置。
 	if err := os.WriteFile(Path, raw, 0o600); err != nil {
-		mu.Unlock()
 		return err
 	}
+	mu.Lock()
+	current = normalized
 	callbacks := append([]func(){}, onChange...)
 	mu.Unlock()
 
@@ -248,9 +251,8 @@ func normalize(c Config) Config {
 	c.WecomAgentID = trim(c.WecomAgentID)
 	c.WecomToUser = trim(c.WecomToUser)
 	c.WecomProxy = trim(c.WecomProxy)
-	if c.AutoUpdateCron == "" {
-		c.AutoUpdateCron = "0 4 * * *"
-	}
+	// cron 留空，让 AutoUpdateCron() 回退到环境变量/默认时刻；不要在这里写死，
+	// 否则用户保存任意设置都会静默覆盖环境变量里的执行时刻。
 	if _, err := strconv.Atoi(c.AutoUpdateMax); c.AutoUpdateMax != "" && err != nil {
 		c.AutoUpdateMax = ""
 	}

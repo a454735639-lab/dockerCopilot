@@ -1,95 +1,110 @@
 syntax = "v1"
 
-type DoLoginReq {
-	SecretKey string `form:"secret_key,optional"`
-}
+// 本文件与 internal/handler/routes.go 保持同步；修改路由时请同时更新此处，
+// 否则重新执行 goctl 会覆盖 internal/types/types.go 里手写补充的字段。
 
-type LoginReq {
-	SecretKey string `form:"secretKey,optional"`
-}
+type (
+	DoLoginReq {
+		SecretKey string `form:"secret_key,optional"`
+	}
 
-type VerifyJwtReq {
-	Jwt string `form:"jwt,optional"`
-}
+	LoginReq {
+		SecretKey   string `form:"secretKey,optional" json:"secretKey,optional"`
+		CaptchaId   string `form:"captchaId,optional" json:"captchaId,optional"`
+		CaptchaCode string `form:"captchaCode,optional" json:"captchaCode,optional"`
+	}
 
-type GetProgressReq {
-	TaskId string `path:"taskid"`
-}
+	VerifyJwtReq {
+		Jwt string `form:"jwt,optional"`
+	}
 
-type StartContainerReq {
-	Name string `json:"name"`
-}
+	GetProgressReq {
+		TaskId string `path:"taskid"`
+	}
 
-type StopContainerReq {
-	Name string `json:"name"`
-}
+	IdReq {
+		Id string `path:"id"`
+	}
 
-type RenameContainerReq {
-	OldName string `json:"oldName"`
-	NewName string `json:"newName"`
-}
+	ContainerRenameReq {
+		IdReq
+		NewName string `form:"newName"`
+	}
 
-type CreateContainerReq {
-	OldName         string `json:"old_name"`
-	NewName         string `json:"new_name"`
-	ImageNameAndTag string `json:"image_name_and_tag"`
-}
+	ContainerRestoreReq {
+		Filename string `json:"filename"`
+	}
 
-type RemoveContainerReq {
-	Name string `json:"name"`
-}
+	DelContainerBackupReq {
+		Filename string `form:"filename"`
+	}
 
-type getNewImageReq {
-	ImageNameAndTag string `json:"image_name_and_tag"`
-}
+	ContainerUpdateReq {
+		IdReq
+		ImageNameAndTag string `form:"imageNameAndTag"`
+		ContainerName   string `form:"containerName"`
+	}
 
-type MsgResp {
-	Status string `json:"status"`
-	Msg    string `json:"msg"`
-}
+	RemoveImageReq {
+		IdReq
+		Force bool `form:"force,default=false"`
+	}
 
-type Resp {
-	Code int         `json:"code"`
-	Msg  string      `json:"msg"`
-	Data interface{} `json:"data"`
-}
+	ImagePullReq {
+		Image string `json:"image"`
+	}
 
-type IdReq {
-	Id string `path:"id"`
-}
+	ImagePruneReq {
+		Keep     int  `json:"keep"`
+		Dangling bool `json:"dangling"`
+		DryRun   bool `json:"dryRun"`
+	}
 
-type ContainerRestoreReq {
-	Filename string `json:"filename"`
-}
+	SystemPruneReq {
+		BuildCache     bool `json:"buildCache"`
+		DanglingImages bool `json:"danglingImages"`
+	}
 
-type DelContainerBackupReq {
-	Filename string `form:"filename"`
-}
+	VersionReq {
+		Type string `form:"type"`
+	}
 
-type ContainerRenameReq {
-	IdReq
-	NewName string `form:"newName"`
-}
+	SettingsUpdateReq {
+		IgnoreImages      string `json:"ignoreImages"`
+		IgnoreContainers  string `json:"ignoreContainers"`
+		NotifyURL         string `json:"notifyUrl"`
+		NotifyFormat      string `json:"notifyFormat"`
+		AutoUpdate        string `json:"autoUpdate"`
+		AutoUpdateCron    string `json:"autoUpdateCron"`
+		AutoUpdateInclude string `json:"autoUpdateInclude"`
+		AutoUpdateMax     string `json:"autoUpdateMax"`
+		PruneOldImages    string `json:"pruneOldImages"`
+		PruneKeep         string `json:"pruneKeep"`
+		PruneDangling     string `json:"pruneDangling"`
+		PruneDryRun       string `json:"pruneDryRun"`
+		WecomCorpID       string `json:"wecomCorpId"`
+		WecomSecret       string `json:"wecomSecret"`
+		WecomAgentID      string `json:"wecomAgentId"`
+		WecomToUser       string `json:"wecomToUser"`
+		WecomProxy        string `json:"wecomProxy"`
+	}
 
-type RemoveImageReq {
-	IdReq
-	Force bool `form:"force,default=false"`
-}
+	MsgResp {
+		Status string `json:"status"`
+		Msg    string `json:"msg"`
+	}
 
-type ContainerUpdateReq {
-	IdReq
-	ImageNameAndTag string `form:"imageNameAndTag"`
-	ContainerName   string `form:"containerName"`
-}
+	Resp {
+		Code int         `json:"code"`
+		Msg  string      `json:"msg"`
+		Data interface{} `json:"data"`
+	}
 
-type VersionMsgResp {
-	Version   string `json:"version"`
-	BuildDate string `json:"build_date"`
-}
-
-type VersionReq {
-	Type string `form:"type"`
-}
+	VersionMsgResp {
+		Version   string `json:"version"`
+		BuildDate string `json:"build_date"`
+	}
+)
 
 service dockerCopilot {
 	@handler webindex
@@ -103,87 +118,94 @@ service dockerCopilot {
 service dockerCopilot {
 	@handler Login
 		post /auth (LoginReq) returns (Resp)
+
+	@handler Captcha
+		get /auth/captcha returns (Resp)
 }
 
 @server(
 	prefix: /api
-	group: progress
 	jwt: Auth
 )
 service dockerCopilot {
-	@handler GetProgress
-		get /progress/:taskid (GetProgressReq) returns (Resp)
-}
+	@handler Logout
+		post /auth/logout returns (Resp)
 
-@server(
-	prefix: /api
-	group: container
-	jwt: Auth
-)
-service dockerCopilot {
 	@handler containersList
-	get /containers returns (Resp)
-
-	@handler start
-	post /container/:id/start (IdReq) returns (Resp)
-
-	@handler stop
-	post /container/:id/stop (IdReq) returns (Resp)
-
-	@handler restart
-	post /container/:id/restart (IdReq) returns (Resp)
+		get /containers returns (Resp)
 
 	@handler rename
-	post /container/:id/rename (ContainerRenameReq) returns (Resp)
+		post /container/:id/rename (ContainerRenameReq) returns (Resp)
+
+	@handler restart
+		post /container/:id/restart (IdReq) returns (Resp)
+
+	@handler start
+		post /container/:id/start (IdReq) returns (Resp)
+
+	@handler stop
+		post /container/:id/stop (IdReq) returns (Resp)
 
 	@handler update
-	post /container/:id/update (ContainerUpdateReq) returns (Resp)
+		post /container/:id/update (ContainerUpdateReq) returns (Resp)
 
 	@handler backup
-	get /container/backup returns (Resp)
+		get /container/backup returns (Resp)
 
 	@handler backup2compose
-	get /container/backup2compose returns (Resp)
+		get /container/backup2compose returns (Resp)
 
-	@handler listBackups
-	get /container/listBackups returns (Resp)
+	@handler delRestore
+		delete /container/backups (DelContainerBackupReq) returns (Resp)
 
 	@handler restore
 		post /container/backups/restore (ContainerRestoreReq) returns (Resp)
 
-	@handler delRestore
-		delete /container/backups (DelContainerBackupReq) returns (Resp)
-}
+	@handler listBackups
+		get /container/listBackups returns (Resp)
 
-@server(
-	prefix: /api
-	group: image
-	jwt: Auth
-)
-service dockerCopilot {
+	@handler pull
+		post /image/pull (ImagePullReq) returns (Resp)
+
+	@handler detail
+		get /image/detail/:id (IdReq) returns (Resp)
+
+	@handler prune
+		post /image/prune (ImagePruneReq) returns (Resp)
+
+	@handler DF
+		get /system/df returns (Resp)
+
+	@handler Prune
+		post /system/prune (SystemPruneReq) returns (Resp)
+
+	@handler GetSettings
+		get /settings returns (Resp)
+
+	@handler UpdateSettings
+		post /settings (SettingsUpdateReq) returns (Resp)
+
+	@handler TestNotify
+		post /settings/test-notify (SettingsUpdateReq) returns (Resp)
+
 	@handler imagesList
-	get /images returns (Resp)
+		get /images returns (Resp)
 
 	@handler remove
-	delete /image/:id (RemoveImageReq) returns (Resp)
-}
+		delete /image/:id (RemoveImageReq) returns (Resp)
 
-@server(
-	prefix: /api
-	group: version
-	jwt: Auth
-)
-service dockerCopilot {
-	@handler version
-		get /version (VersionReq) returns (Resp)
+	@handler GetProgress
+		get /progress/:taskid (GetProgressReq) returns (Resp)
 
 	@handler updateProgram
 		put /program returns (Resp)
+
+	@handler version
+		get /version (VersionReq) returns (Resp)
 }
 
 @server(
 	prefix: /api/icons
-	group: icons
 	jwt: Auth
 )
 service dockerCopilot {
@@ -191,5 +213,5 @@ service dockerCopilot {
 		post / returns (Resp)
 
 	@handler obtain
-	get / returns (Resp)
+		get / returns (Resp)
 }

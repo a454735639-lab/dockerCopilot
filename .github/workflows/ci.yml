@@ -1,0 +1,59 @@
+name: ci
+
+# 只做构建与测试验证，不产出任何 release 或镜像 tag。
+# 发版仍由 latest.yml / UGREEN.yml / FNOS.yml 在版本文件变更时触发。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - latest
+      - latest-dev
+    paths:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+      - 'front/**'
+      - .github/workflows/ci.yml
+  pull_request:
+    branches:
+      - latest
+    paths:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+      - 'front/**'
+      - .github/workflows/ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24.1'
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      # 交叉编译两个发布架构，提前发现平台相关问题；产物不保留。
+      - name: Build (amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags="-w -s -X 'github.com/onlyLTY/dockerCopilot/internal/config.Version=ci'" \
+            -o /tmp/dockerCopilot-amd64 .
+
+      - name: Build (arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+            -ldflags="-w -s -X 'github.com/onlyLTY/dockerCopilot/internal/config.Version=ci'" \
+            -o /tmp/dockerCopilot-arm64 .

@@ -15,8 +15,12 @@ import (
 // 自绘而不接 Cloudflare Turnstile：面板常经 Tailscale IP（100.x）直连，
 // Turnstile 需要域名白名单，IP 访问会失效。
 const (
-	captchaTTL      = 2 * time.Minute
-	captchaAlphabet = "abcdefghjkmnpqrstuvwxyz23456789" // 去掉 0/o/1/l/i 等易混字符
+	captchaTTL         = 2 * time.Minute
+	captchaAlphabet    = "abcdefghjkmnpqrstuvwxyz23456789" // 去掉 0/o/1/l/i 等易混字符
+	captchaMaxEntries  = 512                               // 防止公开接口被刷爆内存
+	captchaRateWindow  = time.Minute
+	captchaRateLimit   = 20 // 同一来源每分钟最多取 20 次验证码
+	captchaRateMaxKeys = 1024
 )
 
 type captchaEntry struct {
@@ -27,7 +31,36 @@ type captchaEntry struct {
 var (
 	captchaMu    sync.Mutex
 	captchaStore = map[string]captchaEntry{}
+
+	captchaRateMu sync.Mutex
+	captchaRates  = map[string][]time.Time{} // ip -> 最近取验证码的时刻
 )
+
+// AllowCaptcha 对公开的验证码接口做按来源限速，返回 false 表示应拒绝。
+func AllowCaptcha(ip string) bool {
+	captchaRateMu.Lock()
+	defer captchaRateMu.Unlock()
+	now := time.Now()
+	kept := captchaRates[ip][:0]
+	for _, t := range captchaRates[ip] {
+		if now.Sub(t) <= captchaRateWindow {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= captchaRateLimit {
+		captchaRates[ip] = kept
+		return false
+	}
+	captchaRates[ip] = append(kept, now)
+	if len(captchaRates) > captchaRateMaxKeys {
+		for key, ts := range captchaRates {
+			if len(ts) == 0 || now.Sub(ts[len(ts)-1]) > captchaRateWindow {
+				delete(captchaRates, key)
+			}
+		}
+	}
+	return true
+}
 
 // captchaRandInt 返回 [0, n) 的密码学随机数；n<=0 或出错时退回时间取模
 func captchaRandInt(n int) int {
@@ -54,6 +87,15 @@ func GenCaptcha() (id, svg, code string) {
 	svg = renderCaptcha(code)
 
 	captchaMu.Lock()
+	if len(captchaStore) >= captchaMaxEntries {
+		// purgeCaptchas 已清掉过期项；仍满时淘汰一批最早的，保证内存有上界。
+		for key := range captchaStore {
+			delete(captchaStore, key)
+			if len(captchaStore) < captchaMaxEntries/2 {
+				break
+			}
+		}
+	}
 	captchaStore[id] = captchaEntry{code: strings.ToLower(code), expires: time.Now().Add(captchaTTL)}
 	captchaMu.Unlock()
 	return id, svg, code

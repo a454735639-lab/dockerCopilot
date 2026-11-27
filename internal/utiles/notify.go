@@ -2,11 +2,14 @@ package utiles
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +65,11 @@ func SendTestMessage(c NotifyConf, p NotifyPayload) error {
 	return sendNotify(c, c.URL, p)
 }
 
+// notifyConfigured 判断通知是否可用：企业微信应用模式不需要 URL。
+func notifyConfigured(c NotifyConf) bool {
+	return notifyFormat(c, c.URL) == "wecom_app" || strings.TrimSpace(c.URL) != ""
+}
+
 // NotifyUpdate 异步推送更新结果：失败只记日志，绝不影响更新本身。
 //
 //	NOTIFY_URL=https://api.day.app/xxxx        （自动识别 bark）
@@ -73,7 +81,7 @@ func SendTestMessage(c NotifyConf, p NotifyPayload) error {
 // 识别不准时用 NOTIFY_FORMAT=bark|dingtalk|feishu|ntfy|generic 强制指定。
 func NotifyUpdate(p NotifyPayload) {
 	c := confFromSettings()
-	if strings.TrimSpace(c.URL) == "" {
+	if !notifyConfigured(c) {
 		return
 	}
 	if p.Time == "" {
@@ -92,7 +100,7 @@ var notifiedAvailable sync.Map // 镜像:tag -> 已通知过的远端 digest
 // 同一 digest 只推一次，不会每小时重复轰炸。
 // 不开启 AUTO_UPDATE 时，它等价于 Watchtower 的 monitor-only：只提醒、不动容器。
 func NotifyAvailable(serviceContext *svc.ServiceContext) {
-	if strings.TrimSpace(settings.Str(settings.KeyNotifyURL)) == "" {
+	if !notifyConfigured(confFromSettings()) {
 		return
 	}
 	for _, item := range serviceContext.HubImageInfo.Snapshot() {
@@ -127,6 +135,12 @@ func sendNotify(c NotifyConf, rawURL string, p NotifyPayload) error {
 	if format == "wecom_app" {
 		return sendWecomApp(c, p)
 	}
+	// 校验阶段就把域名解析成具体 IP；不能只校验一次再让 HTTP 客户端重新解析，
+	// 否则攻击者可以用 DNS rebinding 在校验后把域名指到内网。
+	dialAddr, err := resolveNotifyURL(rawURL)
+	if err != nil {
+		return err
+	}
 	body, contentType, err := buildNotifyBody(c, rawURL, p)
 	if err != nil {
 		return err
@@ -136,7 +150,11 @@ func sendNotify(c NotifyConf, rawURL string, p NotifyPayload) error {
 		return err
 	}
 	req.Header.Set("Content-Type", contentType)
-	resp, err := wecomHTTPClient(c).Do(req)
+	client := wecomHTTPClient(c)
+	if dialAddr != "" && !notifyProxyInUse(c, req) {
+		client = pinnedHTTPClient(client, dialAddr)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -206,6 +224,86 @@ func notifyText(p NotifyPayload) string {
 		icon, p.Container, p.Result, p.Image, p.Message, p.DurationMS)
 }
 
+// resolveNotifyURL 防止把通知 webhook 当成 SSRF 探针：只允许公网 http/https，
+// 并返回本次校验解析出的 "IP:端口"，供实际请求固定使用，避免 DNS rebinding。
+// 内网 ntfy 等自建服务可设置 NOTIFY_ALLOW_PRIVATE=1 显式放行。
+func resolveNotifyURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("通知地址无效: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("通知地址仅支持 http/https")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("通知地址缺少域名")
+	}
+	allowPrivate := strings.ToLower(strings.TrimSpace(os.Getenv("NOTIFY_ALLOW_PRIVATE"))) == "1"
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("无法解析通知域名 %s: %w", host, err)
+	}
+	var picked net.IP
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		if !allowPrivate && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+			return "", fmt.Errorf("通知地址不允许指向内网/本机地址: %s", host)
+		}
+		if picked == nil {
+			picked = ip
+		}
+	}
+	if picked == nil {
+		return "", fmt.Errorf("通知域名 %s 没有可用解析结果", host)
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(picked.String(), port), nil
+}
+
+// notifyProxyInUse 判断这次请求是否会走代理；走代理时目标 DNS 由代理解析，
+// 本地固定 IP 反而会连错地址，因此不套用 pinnedHTTPClient。
+func notifyProxyInUse(c NotifyConf, req *http.Request) bool {
+	if p := strings.TrimSpace(c.WecomProxy); p != "" && p != "none" {
+		return true
+	}
+	proxyURL, err := http.ProxyFromEnvironment(req)
+	return err == nil && proxyURL != nil
+}
+
+// pinnedHTTPClient 把已校验的 IP 固定到 DialContext。URL 的主机名保持不变，
+// 因此 Host 头和 TLS SNI 仍然指向原域名，证书校验不受影响。
+func pinnedHTTPClient(base *http.Client, dialAddr string) *http.Client {
+	var tr *http.Transport
+	if base != nil && base.Transport != nil {
+		if t, ok := base.Transport.(*http.Transport); ok {
+			tr = t.Clone()
+		}
+	}
+	if tr == nil {
+		tr = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
+	tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp", dialAddr)
+	}
+	timeout := 8 * time.Second
+	if base != nil && base.Timeout > 0 {
+		timeout = base.Timeout
+	}
+	return &http.Client{Timeout: timeout, Transport: tr}
+}
+
 // notifyFormat 解析生效的通知格式：显式设置 > 按地址推断
 func notifyFormat(c NotifyConf, rawURL string) string {
 	if f := strings.ToLower(strings.TrimSpace(c.Format)); f != "" {
@@ -234,26 +332,33 @@ func guessNotifyFormat(rawURL string) string {
 
 // ---------------- 企业微信应用消息（MP 同款：Corpid+Secret+Agentid）----------------
 
+type wecomTokenEntry struct {
+	token  string
+	expiry time.Time
+}
+
 var (
-	wecomTokenMu     sync.Mutex
-	wecomTokenCache  string
-	wecomTokenExpiry time.Time
+	wecomTokenMu    sync.Mutex
+	wecomTokenCache = map[string]wecomTokenEntry{}
 )
 
 func clearWecomToken() {
 	wecomTokenMu.Lock()
-	wecomTokenCache = ""
-	wecomTokenExpiry = time.Time{}
+	wecomTokenCache = map[string]wecomTokenEntry{}
 	wecomTokenMu.Unlock()
 }
 
-// getWecomToken 拉取并缓存 access_token（官方有效期 7200s，这里缓存 1 小时）
+// getWecomToken 拉取并缓存 access_token（官方有效期 7200s，这里缓存 1 小时）。
+// 缓存按 corpID+secret 区分，换凭证后不会继续用旧 token；网络请求放在锁外。
 func getWecomToken(c NotifyConf, corpID, secret string) (string, error) {
+	key := corpID + "\x00" + secret
 	wecomTokenMu.Lock()
-	defer wecomTokenMu.Unlock()
-	if wecomTokenCache != "" && time.Now().Before(wecomTokenExpiry) {
-		return wecomTokenCache, nil
+	entry, ok := wecomTokenCache[key]
+	wecomTokenMu.Unlock()
+	if ok && entry.token != "" && time.Now().Before(entry.expiry) {
+		return entry.token, nil
 	}
+
 	reqURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=%s&corpsecret=%s",
 		url.QueryEscape(corpID), url.QueryEscape(secret))
 	respBody, err := fetchJSON(c, reqURL)
@@ -271,9 +376,13 @@ func getWecomToken(c NotifyConf, corpID, secret string) (string, error) {
 	if tokenResp.ErrCode != 0 || tokenResp.AccessToken == "" {
 		return "", fmt.Errorf("获取 access_token 失败(errcode=%d): %s", tokenResp.ErrCode, tokenResp.ErrMsg)
 	}
-	wecomTokenCache = tokenResp.AccessToken
-	wecomTokenExpiry = time.Now().Add(1 * time.Hour)
-	return wecomTokenCache, nil
+	wecomTokenMu.Lock()
+	wecomTokenCache[key] = wecomTokenEntry{
+		token:  tokenResp.AccessToken,
+		expiry: time.Now().Add(1 * time.Hour),
+	}
+	wecomTokenMu.Unlock()
+	return tokenResp.AccessToken, nil
 }
 
 // wecomHTTPClient 企业微信专用 HTTP 客户端。

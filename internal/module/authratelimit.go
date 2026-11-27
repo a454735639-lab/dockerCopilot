@@ -1,7 +1,9 @@
 package module
 
 import (
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -9,10 +11,10 @@ import (
 
 // 登录失败限速：同一来源 10 分钟内失败 5 次，锁定 10 分钟。
 //
-// 面板可能经 Cloudflare 隧道暴露公网，此时 RemoteAddr 是 cloudflared 本机，
-// 所有访问者共享同一个 IP，限速会误伤——所以来源优先取
-// CF-Connecting-IP（由 Cloudflare 边缘写入，客户端伪造会被覆盖），
-// 其次 X-Forwarded-For 第一跳，最后才是 RemoteAddr。
+// 只有"可信代理"才允许用 CF-Connecting-IP / X-Forwarded-For 判定来源：
+// cloudflared  tunnel 通常是本机回环地址，默认视为可信；其它部署若确实位于
+// 反向代理之后，可设置 TRUST_PROXY_HEADERS=1 显式开启。否则一律用 RemoteAddr，
+// 避免攻击者伪造请求头绕过锁定。
 const (
 	authFailureWindow = 10 * time.Minute
 	authMaxFailures   = 5
@@ -30,21 +32,48 @@ var (
 )
 
 func ClientIP(r *http.Request) string {
-	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+	remote := remoteIP(r)
+	if !trustedProxy(remote) {
+		return remote
+	}
+	if v := headerIP(r.Header.Get("CF-Connecting-IP")); v != "" {
 		return v
 	}
-	if xf := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xf != "" {
-		parts := strings.Split(xf, ",")
-		return strings.TrimSpace(parts[0])
+	if v := headerIP(r.Header.Get("X-Forwarded-For")); v != "" {
+		return v
 	}
-	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx > 0 {
-		return strings.TrimSpace(strings.Trim(r.RemoteAddr[:idx], "[]"))
+	return remote
+}
+
+func remoteIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return strings.Trim(host, "[]")
 	}
 	return r.RemoteAddr
 }
 
+func trustedProxy(remote string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TRUST_PROXY_HEADERS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	ip := net.ParseIP(remote)
+	return ip != nil && ip.IsLoopback()
+}
+
+// headerIP 只接受单个合法 IP，避免把任意字符串当成限速键。
+func headerIP(raw string) string {
+	value := strings.TrimSpace(strings.Split(raw, ",")[0])
+	if net.ParseIP(value) == nil {
+		return ""
+	}
+	return value
+}
+
 // AuthLocked 返回该来源是否处于锁定状态及剩余时长
 func AuthLocked(ip string) (time.Duration, bool) {
+	authMu.Lock()
+	defer authMu.Unlock()
 	v, ok := authFailures.Load(ip)
 	if !ok {
 		return 0, false

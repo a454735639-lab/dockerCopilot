@@ -28,5 +28,7 @@ venv/
 # 忽略 __pycache__ 目录及其中的所有文件
 __pycache__/
 /db.sqlite3
-/front/
+# 前端产物由 CI 下载，但保留一个占位文件让 //go:embed front/* 在全新 clone 后也能编译
+/front/*
+!/front/index.html
 /logs/

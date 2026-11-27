@@ -37,6 +37,7 @@ func PullImage(serviceContext *svc.ServiceContext, ref string, taskID string) er
 		return err
 	}
 
+	defer func() { _ = reader.Close() }()
 	if err := decodePullResp(reader, serviceContext, taskID); err != nil {
 		return err
 	}

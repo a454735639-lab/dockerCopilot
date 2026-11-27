@@ -6,4 +6,4 @@ Log:
   Encoding: plain
 Auth:
   AccessSecret: ${secretKey}
-  AccessExpire: 604800
+  AccessExpire: 86400

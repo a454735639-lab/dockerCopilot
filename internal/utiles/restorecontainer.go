@@ -3,6 +3,7 @@ package utiles
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	dockerBackend "github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/api/types/image"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
@@ -13,7 +14,8 @@ import (
 )
 
 func RestoreContainer(ctx *svc.ServiceContext, filename string, taskID string) error {
-	var backupList []string
+	var failList []string
+	var successList []string
 	oldProgress := svc.TaskProgress{
 		TaskID:     taskID,
 		Percentage: 0,
@@ -53,6 +55,15 @@ func RestoreContainer(ctx *svc.ServiceContext, filename string, taskID string) e
 		ctx.UpdateProgress(taskID, oldProgress)
 		return err
 	}
+	if len(configList) == 0 {
+		oldProgress.Percentage = 100
+		oldProgress.Message = "备份文件为空"
+		oldProgress.DetailMsg = "备份文件中没有容器配置"
+		oldProgress.IsDone = true
+		ctx.UpdateProgress(taskID, oldProgress)
+		return fmt.Errorf("备份文件为空")
+	}
+
 	for i, containerInfo := range configList {
 		info := "正在恢复第" + strconv.Itoa(i+1) + "个容器"
 		oldProgress.Percentage = int(float64(i) / float64(len(configList)) * 100)
@@ -60,37 +71,54 @@ func RestoreContainer(ctx *svc.ServiceContext, filename string, taskID string) e
 		oldProgress.DetailMsg = info
 		ctx.UpdateProgress(taskID, oldProgress)
 		ctx.DockerClient.NegotiateAPIVersion(context.TODO())
-		if err != nil {
-			backupList = append(backupList, "出现错误"+err.Error())
-			logx.Errorf("Failed to inspect container: %v", err)
-			return err
-		}
-		reader, err := ctx.DockerClient.ImagePull(context.TODO(), containerInfo.Config.Image, image.PullOptions{})
-		if err != nil {
-			backupList = append(backupList, containerInfo.Config.Image+"拉取镜像出现错误"+err.Error())
-			logx.Errorf("Failed to pull image: %v", err)
+
+		// 畸形备份不能让整个恢复 goroutine panic，更不能让进度永远卡住。
+		if containerInfo.Config == nil || containerInfo.Config.Image == "" {
+			detail := fmt.Sprintf("第 %d 个容器配置无效：缺少镜像信息", i+1)
+			logx.Error(detail)
+			failList = append(failList, detail)
 			continue
 		}
-		err = decodePullResp(reader, ctx, taskID)
-		if err != nil {
-			backupList = append(backupList, containerInfo.Config.Image+"拉取镜像出现错误"+err.Error())
-			logx.Errorf("Failed to pull image: %v", err)
-			continue
+		imageRef := containerInfo.Config.Image
+		// 本地已有镜像时不要拉取：本地 build 的镜像/私有镜像/离线环境都会因拉取失败而漏恢复。
+		if _, _, inspectErr := ctx.DockerClient.ImageInspectWithRaw(context.TODO(), imageRef); inspectErr != nil {
+			if pullErr := pullImageForRestore(ctx, imageRef, taskID); pullErr != nil {
+				detail := imageRef + " 拉取镜像出现错误: " + pullErr.Error()
+				logx.Error(detail)
+				failList = append(failList, detail)
+				continue
+			}
 		}
 		_, err = ctx.DockerClient.ContainerCreate(context.TODO(), containerInfo.Config, containerInfo.HostConfig, containerInfo.NetworkingConfig, nil, containerInfo.Name)
 		if err != nil {
-			logx.Errorf("Failed to create container: %v", err)
-			info = "正在恢复第" + strconv.Itoa(i+1) + "个容器"
-			backupList = append(backupList, containerInfo.Name+"恢复失败"+err.Error())
+			detail := containerInfo.Name + " 恢复失败: " + err.Error()
+			logx.Error(detail)
+			failList = append(failList, detail)
 			continue
-		} else {
-			backupList = append(backupList, containerInfo.Name+"恢复成功")
 		}
+		successList = append(successList, containerInfo.Name+" 恢复成功")
 	}
+
+	result := append(successList, failList...)
 	oldProgress.Percentage = 100
-	oldProgress.DetailMsg = strings.Join(backupList, ",\n")
-	oldProgress.Message = "恢复完成"
+	oldProgress.DetailMsg = strings.Join(result, ",\n")
 	oldProgress.IsDone = true
+	if len(failList) > 0 {
+		oldProgress.Message = fmt.Sprintf("恢复完成，%d 个容器失败", len(failList))
+		ctx.UpdateProgress(taskID, oldProgress)
+		return fmt.Errorf("恢复完成，但 %d 个容器失败: %s", len(failList), strings.Join(failList, "; "))
+	}
+	oldProgress.Message = "恢复完成"
 	ctx.UpdateProgress(taskID, oldProgress)
 	return nil
+}
+
+// pullImageForRestore 拉取镜像并确保关闭响应体，避免连接/goroutine 泄漏。
+func pullImageForRestore(ctx *svc.ServiceContext, ref string, taskID string) error {
+	reader, err := ctx.DockerClient.ImagePull(context.TODO(), ref, image.PullOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = reader.Close() }()
+	return decodePullResp(reader, ctx, taskID)
 }

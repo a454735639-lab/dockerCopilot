@@ -9,9 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
+	"github.com/onlyLTY/dockerCopilot/internal/module"
 	"github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
@@ -49,7 +52,12 @@ func main() {
 	err := conf.Load(*configFile, &c, conf.UseEnv())
 	if err != nil {
 		logx.Errorf("无法加载配置文件出错: %v", err)
-		logx.Errorf("请确认secretKey设置正确，要求非纯数字且大于八位")
+		logx.Errorf("请确认secretKey设置正确，要求至少八位且非纯数字")
+		os.Exit(1)
+	}
+	// rest.WithJwt 会对长度不足的 secret 直接 panic；这里提前校验，避免"启动即崩"。
+	if err := validateAccessSecret(c.Auth.AccessSecret); err != nil {
+		logx.Errorf("secretKey 配置无效: %v", err)
 		os.Exit(1)
 	}
 	server := rest.MustNewServer(c.RestConf, rest.WithUnauthorizedCallback(
@@ -62,6 +70,8 @@ func main() {
 			httpx.WriteJson(w, http.StatusUnauthorized, response)
 		}))
 	defer server.Stop()
+	// 全局拦截已登出的 JWT（在路由鉴权之前/之后都会执行，两处都能挡住）。
+	server.Use(module.TokenRevocationMiddleware)
 	settings.Init()
 	ctx := svc.NewServiceContext(c)
 
@@ -110,7 +120,10 @@ export const customImageLogos = {
 	}
 	// 自动更新的时刻可以由 UI 改：配置一变就重建这个 cron 条目
 	var autoUpdateEntry cron.EntryID
+	var autoUpdateMu sync.Mutex
 	rebuildAutoUpdate := func() {
+		autoUpdateMu.Lock()
+		defer autoUpdateMu.Unlock()
 		if autoUpdateEntry != 0 {
 			corndanmu.Remove(autoUpdateEntry)
 			autoUpdateEntry = 0
@@ -131,7 +144,8 @@ export const customImageLogos = {
 		logx.Infof("定时自动更新已开启: %s", utiles.AutoUpdateCron())
 	}
 	rebuildAutoUpdate()
-	settings.OnChange(func() { go rebuildAutoUpdate() })
+	// Update 已在锁外调用回调，这里同步执行即可，避免多个 goroutine 并发重建。
+	settings.OnChange(rebuildAutoUpdate)
 	corndanmu.Start()
 	defer corndanmu.Stop()
 	httpx.SetErrorHandler(func(err error) (int, any) {
@@ -210,6 +224,17 @@ func RegisterHandlers(engine *rest.Server) {
 			},
 		},
 	)
+}
+
+// validateAccessSecret 校验 JWT 签名密钥，避免把空/弱密钥带进 rest.WithJwt。
+func validateAccessSecret(secret string) error {
+	if len(secret) < 8 {
+		return fmt.Errorf("至少需要 8 位")
+	}
+	if strings.Trim(secret, "0123456789") == "" {
+		return fmt.Errorf("不能是纯数字")
+	}
+	return nil
 }
 
 // 检查并创建日志目录

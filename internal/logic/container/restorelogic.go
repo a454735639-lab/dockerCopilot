@@ -47,10 +47,18 @@ func (l *RestoreLogic) Restore(req *types.ContainerRestoreReq) (resp *types.Resp
 		return resp, err
 	}
 	go func() {
-		// Catch any panic and log the error
+		// panic 也必须让进度结束，否则前端会永远轮询一个未完成的任务。
 		defer func() {
 			if r := recover(); r != nil {
 				l.Errorf("Recovered from panic in restoreContainer: %v", r)
+				l.svcCtx.UpdateProgress(taskID, svc.TaskProgress{
+					TaskID:     taskID,
+					Percentage: 100,
+					Message:    "恢复失败（内部错误）",
+					DetailMsg:  fmt.Sprintf("%v", r),
+					Name:       "恢复容器",
+					IsDone:     true,
+				})
 			}
 		}()
 		err := utiles.RestoreContainer(l.svcCtx, fileName, taskID)

@@ -3,7 +3,6 @@ package module
 import (
 	"path"
 	"strings"
-	"sync"
 
 	"github.com/onlyLTY/dockerCopilot/internal/settings"
 )
@@ -14,17 +13,6 @@ import (
 //	IGNORE_CONTAINERS=db,redis-*                      匹配容器名
 //
 // 命中的镜像不再检查更新，命中的容器不再显示"可更新"标记。
-var (
-	ignoreOnce       sync.Once
-	ignoreImages     []string
-	ignoreContainers []string
-)
-
-func loadIgnore() {
-	ignoreImages = EnvList("IGNORE_IMAGES")
-	ignoreContainers = EnvList("IGNORE_CONTAINERS")
-}
-
 // EnvList 读取逗号分隔的环境变量，返回小写去空后的列表
 func EnvList(key string) []string {
 	raw := strings.TrimSpace(settings.Str(key))
@@ -61,13 +49,14 @@ func MatchAny(patterns []string, value string) bool {
 
 // IgnoredImage 判断镜像是否在忽略名单里
 func IgnoredImage(imageName, imageTag string) bool {
-	ignoreOnce.Do(loadIgnore)
+	// 每次都读当前配置，保证 UI 保存后立即生效；用局部变量避免并发写共享状态。
+	ignoreImages := EnvList("IGNORE_IMAGES")
 	return MatchAny(ignoreImages, imageName+":"+imageTag) ||
 		MatchAny(ignoreImages, imageName)
 }
 
 // IgnoredContainer 判断容器是否在忽略名单里（传不含前导 / 的容器名）
 func IgnoredContainer(name string) bool {
-	ignoreOnce.Do(loadIgnore)
+	ignoreContainers := EnvList("IGNORE_CONTAINERS")
 	return MatchAny(ignoreContainers, name)
 }

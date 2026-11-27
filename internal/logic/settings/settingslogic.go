@@ -2,10 +2,12 @@ package settings
 
 import (
 	"context"
+	"strings"
 
 	settingsStore "github.com/onlyLTY/dockerCopilot/internal/settings"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
+	"github.com/robfig/cron/v3"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -55,6 +57,13 @@ func (l *SettingsLogic) Get() (resp *types.Resp, err error) {
 func (l *SettingsLogic) Update(req *types.SettingsUpdateReq) (resp *types.Resp, err error) {
 	if req == nil {
 		return &types.Resp{Code: 400, Msg: "参数为空", Data: map[string]string{}}, nil
+	}
+	// 无效表达式必须在保存时拒绝，否则 UI 显示成功但定时更新被静默关闭。
+	if expr := strings.TrimSpace(req.AutoUpdateCron); expr != "" {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, parseErr := parser.Parse(expr); parseErr != nil {
+			return &types.Resp{Code: 400, Msg: "自动更新 cron 表达式无效：" + parseErr.Error(), Data: map[string]string{}}, nil
+		}
 	}
 	if saveErr := settingsStore.Update(*req); saveErr != nil {
 		l.Errorf("保存设置失败: %v", saveErr)

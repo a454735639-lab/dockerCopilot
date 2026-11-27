@@ -41,10 +41,10 @@ func (l *VersionLogic) Version(req *types.VersionReq) (resp *types.Resp, err err
 			resp.Code = 50001
 			resp.Msg = "获取版本错误" + err.Error()
 			resp.Data = map[string]string{
-				"remoteVersion": config.Version,
+				"remoteVersion": remoteVersion,
 			}
 			return resp, nil
-		} else if remoteVersion != config.Version {
+		} else if utiles.CompareVersion(remoteVersion, config.Version) > 0 {
 			resp.Code = 200
 			resp.Msg = "程序有更新"
 			resp.Data = map[string]string{

@@ -116,6 +116,7 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		logx.Errorf("Failed to pull image: %s", err)
 		return err
 	}
+	defer func() { _ = reader.Close() }()
 	err = decodePullResp(reader, serviceContext, taskID)
 	if err != nil {
 		oldTaskProgress.Message = "拉取镜像失败"
@@ -318,7 +319,10 @@ func decodePullResp(reader io.Reader, ctx *svc.ServiceContext, taskID string) (e
 				formattedMsg = fmt.Sprintf("进度%s", msg.Status)
 			}
 			oldTaskProgress.DetailMsg = formattedMsg
-			oldTaskProgress.Percentage = 25
+			// 拉取阶段只把进度抬到 25%，不能覆盖恢复/更新流程里已经更高的百分比。
+			if oldTaskProgress.Percentage < 25 {
+				oldTaskProgress.Percentage = 25
+			}
 			ctx.UpdateProgress(taskID, oldTaskProgress)
 			logx.Infof("拉取镜像进度\t %s: %s\n", msg.Status, msg.Progress)
 		}

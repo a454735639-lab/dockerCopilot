@@ -3,6 +3,7 @@ package utiles
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/onlyLTY/dockerCopilot/internal/module"
@@ -35,8 +36,17 @@ func AutoUpdateCron() string {
 	return "0 4 * * *"
 }
 
+// 防止两轮 cron 任务重叠，突破 AUTO_UPDATE_MAX 并放大 registry 请求。
+var autoUpdateRunMu sync.Mutex
+
 // AutoUpdateOnce 扫描一轮，按更新标记逐个更新命中的容器。
 func AutoUpdateOnce(ctx *svc.ServiceContext) {
+	if !autoUpdateRunMu.TryLock() {
+		logx.Info("自动更新：上一轮仍在进行，跳过本轮")
+		return
+	}
+	defer autoUpdateRunMu.Unlock()
+
 	list, err := GetContainerList(ctx)
 	if err != nil {
 		logx.Errorf("自动更新：获取容器列表失败: %v", err)

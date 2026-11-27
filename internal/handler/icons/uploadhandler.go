@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
@@ -16,7 +17,12 @@ import (
 	"github.com/zeromicro/go-zero/rest/httpx"
 )
 
-var imageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:-]*$`)
+const maxUploadBytes = 10 << 20 // 上传总量上限 10MB
+
+var (
+	imageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:-]*$`)
+	logosMu          sync.Mutex // imageLogos.js 是读-改-写，串行化避免并发覆盖
+)
 
 var allowedImageTypes = map[string]string{
 	".png":  "image/png",
@@ -28,8 +34,10 @@ var allowedImageTypes = map[string]string{
 
 func UploadHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1. 解析 Multipart 表单
-		err := r.ParseMultipartForm(10 << 20) // 10MB 限制
+		// 1. 解析 Multipart 表单。ParseMultipartForm 的参数只是内存阈值，
+		// 真正的大小限制要靠 MaxBytesReader，否则超大文件会落盘写满磁盘。
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		err := r.ParseMultipartForm(1 << 20)
 		if err != nil {
 			writeUploadError(w, http.StatusBadRequest, "failed to parse form")
 			return
@@ -76,9 +84,12 @@ func UploadHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// 5. 更新 imageLogos.js
+		// 5. 更新 imageLogos.js（读-改-写必须串行）
 		jsPath := imageLogosPath
-		if err := updateImageLogosJS(jsPath, imageNameKey, filename); err != nil {
+		logosMu.Lock()
+		err = updateImageLogosJS(jsPath, imageNameKey, filename)
+		logosMu.Unlock()
+		if err != nil {
 			_ = os.Remove(dstPath)
 			writeUploadError(w, http.StatusInternalServerError, "failed to update config")
 			return

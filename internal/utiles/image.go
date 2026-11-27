@@ -40,8 +40,15 @@ func GetImagesList(ctx *svc.ServiceContext) ([]MyType.Image, error) {
 func splitImageNameAndTag(imagesList []MyType.Image) []MyType.Image {
 	for i, imageInfo := range imagesList {
 		if len(imageInfo.RepoTags) != 0 {
-			imagesList[i].ImageName = strings.Split(imageInfo.RepoTags[0], ":")[0]
-			imagesList[i].ImageTag = strings.Split(imageInfo.RepoTags[0], ":")[1]
+			ref := imageInfo.RepoTags[0]
+			// 用最后一个冒号切分，并且必须在最后一个斜杠之后，兼容 reg:5000/foo:tag。
+			if idx := strings.LastIndex(ref, ":"); idx > strings.LastIndex(ref, "/") {
+				imagesList[i].ImageName = ref[:idx]
+				imagesList[i].ImageTag = ref[idx+1:]
+			} else {
+				imagesList[i].ImageName = ref
+				imagesList[i].ImageTag = "None"
+			}
 		} else if len(imageInfo.RepoDigests) != 0 {
 			imagesList[i].ImageName = strings.Split(imageInfo.RepoDigests[0], "@")[0]
 			imagesList[i].ImageTag = "None"

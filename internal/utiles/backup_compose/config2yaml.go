@@ -41,9 +41,10 @@ func DockerConfig2ComposeYaml(containerJSONs []dockerTypes.ContainerJSON) (err e
 	yamlData, yamlMarshalErr := yaml.Marshal(c)
 	if yamlMarshalErr != nil {
 		logx.Errorf("Error marshalling data err is: %v", yamlMarshalErr)
+		return yamlMarshalErr
 	}
-	currentDate := time.Now().Format("2006-01-02")
-	fileName := "backup-" + currentDate + ".yaml"
+	// 文件名带时间戳，避免同一天多次备份互相覆盖。
+	fileName := "backup-" + time.Now().Format("2006-01-02_150405.000") + ".yaml"
 	fullPath := filepath.Join(backupDir, fileName)
 	err = os.WriteFile(fullPath, yamlData, 0644)
 	if err != nil {
@@ -89,6 +90,10 @@ func formatNetworkServiceConfig(containerJSON dockerTypes.ContainerJSON, s *comp
 			logx.Errorf("Error converting port err is: %v", convertErr)
 			continue
 		}
+		if len(v) == 0 {
+			logx.Errorf("端口 %s 没有绑定规则，跳过", containerPort)
+			continue
+		}
 		p.Target = uint32(portNum)
 		p.Published = v[0].HostPort
 		p.Protocol = proto
@@ -100,9 +105,15 @@ func formatVolumeServiceConfig(containerJSON dockerTypes.ContainerJSON, s *compo
 	for _, containerVolume := range containerJSON.Mounts {
 		var v composeType.ServiceVolumeConfig
 		v.Type = string(containerVolume.Type)
-		v.Source = containerVolume.Source
+		// Docker 的 MountPoint.Source 对命名卷是宿主机数据目录；compose 需要卷名。
+		if string(containerVolume.Type) == "volume" && containerVolume.Name != "" {
+			v.Source = containerVolume.Name
+		} else {
+			v.Source = containerVolume.Source
+		}
 		v.Target = containerVolume.Destination
-		v.ReadOnly = containerVolume.RW
+		// Docker 的 RW 表示可写，compose 的 ReadOnly 语义相反。
+		v.ReadOnly = !containerVolume.RW
 		s.Volumes = append(s.Volumes, v)
 	}
 }

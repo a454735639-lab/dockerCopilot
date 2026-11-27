@@ -14,6 +14,14 @@ import (
 // 设 CAPTCHA_DEBUG=1 时响应里带明文 code，仅用于联调验证，生产不要开。
 func CaptchaHandler(ctx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !module.AllowCaptcha(module.ClientIP(r)) {
+			httpx.WriteJson(w, http.StatusTooManyRequests, &types.Resp{
+				Code: http.StatusTooManyRequests,
+				Msg:  "验证码请求过于频繁，请稍后再试",
+				Data: map[string]string{},
+			})
+			return
+		}
 		id, svg, code := module.GenCaptcha()
 		data := map[string]string{"captchaId": id, "svg": svg}
 		if os.Getenv("CAPTCHA_DEBUG") == "1" {
