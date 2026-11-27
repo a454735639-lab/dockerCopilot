@@ -87,31 +87,39 @@ jobs:
       - name: List current directory
         run: ls -la
 
-      - name: Check if release already exists
-        id: check_release
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bin-${{ matrix.arch }}
+          path: dockerCopilot-${{ matrix.arch }}.tar.gz
+
+  # release 只在这里创建一次；放在矩阵任务里会因 amd64/arm64 并发而建出重复 release。
+  publish-release:
+    needs: [ build-backend ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Get version from file
         run: |
-          exists=$(gh release view ${{ env.version }} 2>&1 | grep "release not found" || true)
-          if [[ -z "$exists" ]]; then
-            echo "Release exists"
-            echo "RELEASE_EXISTS=true" >> $GITHUB_ENV
+          echo "version=$(cat ugreen_version)" >> $GITHUB_ENV
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-bin-*
+          merge-multiple: true
+          path: release
+
+      - name: Create or update GitHub Release
+        run: |
+          if gh release view "${{ env.version }}" >/dev/null 2>&1; then
+            echo "release ${{ env.version }} 已存在，直接追加产物"
           else
-            echo "Release does not exist"
-            echo "RELEASE_EXISTS=false" >> $GITHUB_ENV
+            gh release create "${{ env.version }}" \
+              --title "${{ env.version }}" \
+              --notes "Release of version ${{ env.version }}"
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release if not exists
-        if: env.RELEASE_EXISTS == 'false'
-        run: |
-          gh release create ${{ env.version }} \
-            --title "${{ env.version }}" \
-            --notes "Release of version ${{ env.version }}" || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Asset for ${{ matrix.arch }}
-        run: |
-          gh release upload ${{ env.version }} dockerCopilot-${{ matrix.arch }}.tar.gz --clobber
+          gh release upload "${{ env.version }}" release/*.tar.gz --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
